@@ -27,7 +27,7 @@ curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/auth/session"
 
 **Both halves of the account are required.** An account without Discord, without a Discord e-mail, or without Roblox gets `403 { "error": "account_link_required", "missing": "discord" | "discord-email" | "roblox", "linkUrl": "/link-discord" }` on every API call until it is linked.
 
-**Terms acceptance.** When a new Terms of Service / Privacy Policy version is published, `GET /api/auth/session` returns `user.legal.mustAccept: true`. The website then sends the member to `/terms/accept`; an external client should show its own acceptance screen using `GET /api/legal/current` and `POST /api/legal/accept`. The API itself keeps working meanwhile.
+**Terms acceptance.** When a new Terms of Service / Privacy Policy version is published, `GET /api/auth/session` returns `user.legal.mustAccept: true`. The website then shows its acceptance screen in place of every page (except the Terms, the Privacy Policy and pages like an exam in progress); an external client should show its own acceptance screen using `GET /api/legal/current` and `POST /api/legal/accept`. The API itself keeps working meanwhile.
 
 **Cross-site writes** that carry the session cookie are refused (`403 { "error": "Request blocked" }`) unless they come from the site itself. Bearer and API-key callers are not affected.
 
@@ -539,7 +539,7 @@ curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: app
 
 ### `POST /api/legal/accept`
 
-**Why:** Accept the Terms of Service and the Privacy Policy version in force. While a published version is not accepted, the web app sends the member to `/terms/accept` on every page (`user.legal.mustAccept` in `GET /api/auth/session`); external clients should show their own acceptance screen.
+**Why:** Accept the Terms of Service and the Privacy Policy version in force. While a published version is not accepted, the web app shows its acceptance screen in place of every page (`user.legal.mustAccept` in `GET /api/auth/session`); external clients should show their own acceptance screen.
 
 **Auth:** Session or bearer. Logged as `LEGAL_ACCEPT`; the acceptance is stored with its time, IP address and browser.
 

@@ -104,7 +104,7 @@ curl -sS "$HSR_URL/api/status"
 
 **Auth:** None (session or bearer optional).
 
-**Request:** Query `locale` (`hu` | `en` | `de`, optional — the language of `changes`; defaults to the `hsr_locale` cookie, then Hungarian).
+**Request:** Query `locale` (`hu` | `en` | `de`, optional — the language of `changes` and `effectiveDateLabel`; defaults to the `hsr_locale` cookie, then Hungarian).
 
 ```bash
 curl -sS "$HSR_URL/api/legal/current?locale=en"
@@ -113,11 +113,11 @@ curl -sS "$HSR_URL/api/legal/current?locale=en"
 **Response:**
 ```json
 {
-  "version": { "id": "clv1234567890", "effectiveDate": "2026-10-16T00:00:00.000Z", "publishedAt": "2026-10-16T09:00:00.000Z", "changes": ["Notifications can now also arrive as Discord messages."] },
+  "version": { "id": "clv1234567890", "effectiveDate": "2026-10-16T00:00:00.000Z", "effectiveDateLabel": "16 October 2026", "publishedAt": "2026-10-16T09:00:00.000Z", "changes": ["Notifications can now also arrive as Discord messages."] },
   "mustAccept": true
 }
 ```
-`{ "version": null }` while no version has been published (nothing to accept). `mustAccept` is only present with a session; accept with `POST /api/legal/accept`.
+`effectiveDateLabel` is the date already written out in that language, as the website prints it. `{ "version": null }` while no version has been published (nothing to accept). `mustAccept` is only present with a session; accept with `POST /api/legal/accept`.
 
 ## Timetable and Delays
 
