@@ -228,6 +228,8 @@ The endpoint is disabled and returns `404` unless review credentials are configu
 - Treat `403` as an account or permission decision, not as an expired access token.
 - Read the structured `error` value from failed responses.
 - Use permission data from `/api/auth/session`; do not authorize features from the legacy `role` string alone.
+- When `/api/auth/session` returns `user.legal.mustAccept: true`, show the changes from `GET /api/legal/current` and send the member's acceptance with `POST /api/legal/accept` (see the [Authenticated API](api.md#member-account-settings-and-legal)).
+- Let members choose their e-mail and Discord notifications with `GET`/`PATCH /api/profile/notifications`.
 
 ## Full Endpoint Reference
 
@@ -483,25 +485,3 @@ curl -sS -X DELETE "$HSR_URL/api/push/subscribe" \
 { "success": true }
 ```
 Deletes every `PushSubscription` row matching `(userId, endpoint)`. Errors: 401 `"Unauthorized"`; 400 `"Endpoint required"`; 500 `"Failed to delete subscription"`.
-
-### `GET /api/push/duty-reminders`
-
-**Why:** External cron endpoint that scans today's approved schedule requests and sends push reminders 30/10/5 minutes before a driver's or dispatcher's shift starts, so members don't have to watch a clock.
-
-**Auth:** Shared-secret cron auth — `Authorization: Bearer <CRON_SECRET>` header (not `CRON_API_KEY`, unlike most other cron routes documented elsewhere in this app).
-
-**Request:** No body/params.
-
-```bash
-curl -sS "$HSR_URL/api/push/duty-reminders" -H "Authorization: Bearer $CRON_SECRET"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "remindersSent": ["János Kovács (30 min)", "Péter Nagy (10 min)"],
-  "timestamp": "2026-09-13T07:00:00.000Z"
-}
-```
-For `DRIVER` requests, the reminder time is the train's origin departure time (`originDepartureTime()`, direction-aware for return workings); for `DISPATCHER` requests it defaults to 08:00 (no per-request start time is stored). Sends via `sendDutyReminder()`; a failure to send one reminder is caught and logged, not fatal to the run. Errors: 401 `"Unauthorized"` (missing/wrong `CRON_SECRET`); 500 `"Failed to process reminders"`.

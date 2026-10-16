@@ -1,37 +1,39 @@
-# HSR API
+# HSR Authenticated API
 
-This is the backend API reference for the HSR web application. The API is implemented with Next.js App Router route handlers and returns JSON unless a route explicitly documents a redirect or a file response.
+Endpoints that need **a signed-in session or a token**: your own account, duty, training, the forum's write side, tickets and documents, the admin panel, and the server-to-server jobs. Endpoints that need nothing are in the [Public API](public-api.md); mobile sign-in is in the [Mobile API](mobile-api.md). [README](README.md) has the overview.
 
 ## Base URL
 
-Replace `https://hsr.example.com` in the examples with the deployed HSR URL.
-
 ```bash
-export HSR_URL="https://hsr.example.com"
+export HSR_URL="https://hsrgames.hu"
 ```
 
-## Authentication
+## How to authenticate
 
-### Browser session
-
-Web users authenticate through the browser. The server stores the session in the httpOnly `auth-token` cookie.
-
-### Bearer token
-
-External clients may send a mobile access token on approved API prefixes.
+| Caller | Credential | How to get it |
+|---|---|---|
+| Browser (the website) | `auth-token` httpOnly cookie (JWT, 30 days) | Sign in with Discord: `GET /api/auth/discord/login`, then link Roblox |
+| Mobile / external app | `Authorization: Bearer <access token>` (7 days; refresh token 90 days) | OAuth flow in the [Mobile API](mobile-api.md) |
+| Roblox game server | `x-api-key: <GAME_API_KEY>` | Server configuration |
+| Scheduled jobs | `x-api-key: <CRON_API_KEY>` (one job: `Authorization: Bearer <CRON_SECRET>`) | Server configuration |
+| Payment webhooks | Provider signature header | Stripe / Printful dashboard |
 
 ```bash
 export ACCESS_TOKEN="<access-token>"
-curl -sS \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/auth/session"
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/auth/session"
 ```
 
-The session response contains the current user, Discord roles, permission flags, suspensions, locale, maintenance state, and exam lock state. An invalid or expired token returns HTTP `401`.
+**Bearer tokens** are accepted on these prefixes: `/api/auth/session`, `/api/duty`, `/api/profile`, `/api/admin`, `/api/schedule-request`, `/api/supervisor-request`, `/api/push/token`, `/api/mobile`, `/api/user`, `/api/sessions`, `/api/leaderboard`, `/api/news`, `/api/shop`, `/api/cargo`, `/api/dispatch-orders`, `/api/route-permit`, `/api/map`, `/api/training`, `/api/legal` — and on the forum, whose paths are public at the edge and check the token in the handler. Anywhere else, use the cookie.
+
+**Both halves of the account are required.** An account without Discord, without a Discord e-mail, or without Roblox gets `403 { "error": "account_link_required", "missing": "discord" | "discord-email" | "roblox", "linkUrl": "/link-discord" }` on every API call until it is linked.
+
+**Terms acceptance.** When a new Terms of Service / Privacy Policy version is published, `GET /api/auth/session` returns `user.legal.mustAccept: true`. The website then sends the member to `/terms/accept`; an external client should show its own acceptance screen using `GET /api/legal/current` and `POST /api/legal/accept`. The API itself keeps working meanwhile.
+
+**Cross-site writes** that carry the session cookie are refused (`403 { "error": "Request blocked" }`) unless they come from the site itself. Bearer and API-key callers are not affected.
 
 ## Response conventions
 
-Successful JSON responses use HTTP `200`, unless an endpoint documents a redirect or another status. Errors use this shape:
+Successful responses are JSON with `200` (or `201` for a creation), unless an entry documents a redirect, a file or a stream. Errors look like:
 
 ```json
 { "error": "Human-readable error message" }
@@ -39,132 +41,44 @@ Successful JSON responses use HTTP `200`, unless an endpoint documents a redirec
 
 | Status | Meaning |
 |---:|---|
-| `200` | Request succeeded |
 | `400` | Missing or invalid input |
-| `401` | No valid session or bearer token |
-| `403` | Authenticated, but not allowed or banned |
-| `404` | Resource does not exist |
-| `409` | Conflict with current state |
+| `401` | No valid session, token or key |
+| `403` | Authenticated, but not allowed (permission flag, banned, account not linked) |
+| `404` | Not found — also used instead of `403` where existence itself is private |
+| `409` | Conflict with the current state |
 | `429` | Rate limit exceeded |
-| `500` | Unexpected server-side failure |
+| `500` / `502` / `503` | Server-side failure / upstream (Discord, Stripe) failure / storage not configured |
 
-## Route groups
+**Permissions.** Admin endpoints name the permission flag they need (`MANAGE_USERS`, `MANAGE_TRAINS`, …). Flags come from the member's Discord roles plus per-user overrides; `GET /api/auth/session` returns the caller's resolved `permissionFlags`. Admin actions are recorded in the activity log.
 
-The route names below are real route prefixes. A parameter is written as `[id]` in the source and as a concrete value in a request. Every one of the 336 route files under `src/app/api/` (456 method handlers total) is documented individually, with its own `curl` example, in [Full Endpoint Reference](#full-endpoint-reference) below.
+**Server-sent events.** Endpoints ending in `/stream` (and `/api/forum/live`) answer `text/event-stream`; keep the connection open and read `data:` lines.
 
-### Authentication
+## Contents
 
-- `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`
-- `/api/auth/discord/*`
-- `/api/auth/roblox/link`, `/api/auth/callback`
-- `/api/auth/spotify/*`
-- `/api/auth/mobile/*` - see [Mobile API](mobile-api.md)
-- `/api/auth/game/*` - game-client OAuth
+- [Authentication Endpoints](#authentication-endpoints) (17)
+- [Member: Account, Settings and Legal](#member-account-settings-and-legal) (35)
+- [Member: Duty and Railway Operations](#member-duty-and-railway-operations) (40)
+- [Member: Training, Exams and Supervision](#member-training-exams-and-supervision) (40)
+- [Member: Forum](#member-forum) (15)
+- [Member: Tickets, Documents and Shop](#member-tickets-documents-and-shop) (20)
+- [Admin: Badges, Blacklist, Cargo, Diagnostics, Discord, Dispatch Orders, Documents](#admin-badges-blacklist-cargo-diagnostics-discord-dispatch-orders-documents) (31)
+- [Admin: Duty Management](#admin-duty-management) (23)
+- [Admin: Email, Exam Slots, Exams](#admin-email-exam-slots-exams) (38)
+- [Admin: Game Stats, Instructors, Locomotive Pool, Maintenance, Perf Stats, Permissions](#admin-game-stats-instructors-locomotive-pool-maintenance-perf-stats-permissions) (32)
+- [Admin: Schedule Requests, Shop, Stations, Stops](#admin-schedule-requests-shop-stations-stops) (35)
+- [Admin: Statistics, Supervision Rules, Discord Tickets](#admin-statistics-supervision-rules-discord-tickets) (20)
+- [Admin: Training Programmes & Content, Trains](#admin-training-programmes--content-trains) (26)
+- [Admin: Type Trainings, Users, Wagon Pool, Wrapped](#admin-type-trainings-users-wagon-pool-wrapped) (25)
+- [Admin: Forum](#admin-forum) (12)
+- [Admin: Timetable and Pool Drafts](#admin-timetable-and-pool-drafts) (10)
+- [Admin: Discord Messages](#admin-discord-messages) (7)
+- [Admin: Activity Log, Delays, Reports and Tools](#admin-activity-log-delays-reports-and-tools) (16)
+- [Admin: Terms & Privacy Versions](#admin-terms--privacy-versions) (2)
+- [Server-to-server: Cron Jobs](#server-to-server-cron-jobs) (36)
+- [Server-to-server: Game Server](#server-to-server-game-server) (7)
+- [Server-to-server: Payment and Fulfilment Webhooks](#server-to-server-payment-and-fulfilment-webhooks) (3)
 
-### Member and public data
-
-- `/api/profile/*`, `/api/profiles/[handle]/*`
-- `/api/user/*`, `/api/sessions/*`
-- `/api/leaderboard/*`, `/api/news`, `/api/changelog`
-- `/api/wiki/*`, `/api/schedule/*`
-
-Example public news request:
-
-```bash
-curl -sS "$HSR_URL/api/news?limit=6"
-```
-
-Response:
-
-```json
-{
-  "items": [
-    {
-      "id": "discord-message-id",
-      "title": "News title",
-      "summary": "News summary",
-      "publishedAt": "2026-09-13T10:00:00.000Z"
-    }
-  ]
-}
-```
-
-`limit` is optional and is clamped to `1..20`. A server error returns HTTP `500` with `{ "error": "Failed to fetch news" }`.
-
-### Duty and railway operations
-
-- `/api/duty/*`
-- `/api/schedule-request/*`
-- `/api/dispatch-orders/*`
-- `/api/route-permit/*`
-- `/api/map/*`
-- `/api/cargo/*`
-- Train administration is handled under `/api/admin/trains`.
-
-Example authenticated request:
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/duty/active?type=TRAIN_DRIVER"
-```
-
-The successful response is an array of active duty objects containing the duty member, start location, assigned trains, and station data. `type` is optional; valid values include `TRAIN_DRIVER` and `TRAIN_DISPATCHER`.
-
-### Training, exams, and supervision
-
-- `/api/training/*`
-- `/api/exams/*`
-- `/api/exam-slots/*`
-- `/api/closing-exam-vote/[token]`
-- `/api/supervisor-request/*`
-
-These endpoints enforce training status, exam eligibility, permissions, and attempt state. Use the response's `error` field together with its HTTP status when displaying a refusal.
-
-### Tickets, documents, and shop
-
-- `/api/tickets/*`
-- `/api/documents/*`
-- `/api/shop/*`
-- `/api/printful/*`
-- `/api/verify/*`
-
-### Admin and scheduled jobs
-
-- `/api/admin/*` - permission-gated admin operations
-- `/api/cron/*` - server-to-server scheduled jobs
-- `/api/maintenance-status`
-
-Admin APIs require a valid session and the permission appropriate to the operation. Cron endpoints are protected server-to-server endpoints, not general client APIs.
-
-## Public routes
-
-Common public endpoints include `/`, `/login`, `/wiki`, `/timetable`, `/support`, `/api/news`, `/api/changelog`, `/api/auth/mobile/*`, `/api/game/*`, and `/api/cron/*`.
-
-## Security behavior
-
-The middleware applies public-route allowlisting, incomplete-account enforcement, cookie and bearer authentication, and security headers. A route being publicly reachable does not mean every operation on it is anonymous; individual handlers still validate tokens, ownership, permissions, signatures, or request-specific tokens.
-
-## Full Endpoint Reference
-
-Every endpoint below is grouped by area, in the same order the sections above summarize them. Mobile OAuth, Live Activity, and push-token endpoints are documented in full in [Mobile API](mobile-api.md#full-endpoint-reference) instead of being repeated here.
-
-- [Authentication (Web & Game Client)](#authentication-web--game-client)
-- [Admin: Badges, Blacklist, Cargo, Diagnostics, Discord, Dispatch Orders, Documents](#admin-badges-blacklist-cargo-diagnostics-discord-dispatch-orders-documents)
-- [Admin: Duty Management](#admin-duty-management)
-- [Admin: Email, Exam Slots, Exams](#admin-email-exam-slots-exams)
-- [Admin: Game Stats, Instructors, Locomotive Pool, Maintenance, Perf Stats, Permissions](#admin-game-stats-instructors-locomotive-pool-maintenance-perf-stats-permissions)
-- [Admin: Schedule Requests, Shop, Stations, Stops](#admin-schedule-requests-shop-stations-stops)
-- [Admin: Statistics, Supervision Rules, Terms, Discord Tickets, Track Map](#admin-statistics-supervision-rules-terms-discord-tickets-track-map)
-- [Admin: Training Programmes & Content, Trains](#admin-training-programmes--content-trains)
-- [Admin: Type Trainings, Users, Wagon Pool, Wrapped](#admin-type-trainings-users-wagon-pool-wrapped)
-- [Cron Jobs](#cron-jobs)
-- [Cargo, Changelog, Closing-Exam Vote, Dispatch Orders, Documents, Duty](#cargo-changelog-closing-exam-vote-dispatch-orders-documents-duty)
-- [Exam Slots, Exams, Game Client, Leaderboard, Map, News, Payment Webhooks, Profiles](#exam-slots-exams-game-client-leaderboard-map-news-payment-webhooks-profiles)
-- [Route Permits, Schedule, Search, Sessions, Shop, Stripe](#route-permits-schedule-search-sessions-shop-stripe)
-- [Supervision, Supervisor Requests, Tickets, Training, Type Trainings, User, Verify, Wiki](#supervision-supervisor-requests-tickets-training-type-trainings-user-verify-wiki)
-
-## Authentication (Web & Game Client)
+## Authentication Endpoints
 
 ### `GET /api/auth/discord`
 
@@ -292,11 +206,13 @@ curl -sS \
     "totalDonated": 0,
     "locale": "hu",
     "maintenance": { "enabled": false, "message": null },
-    "examLock": null
+    "examLock": null,
+    "legal": { "versionId": "clv1234567890", "effectiveDate": "2026-10-16T00:00:00.000Z", "mustAccept": false }
   },
   "isDiscordLinked": true
 }
 ```
+- `legal.mustAccept` is `true` while a published Terms/Privacy version waits for this member's acceptance (`versionId` is `null` until the first version is published).
 - `401 { "user": null }` if there is no valid session, or if the underlying `User` row can no longer be found.
 
 ---
@@ -570,6 +486,3219 @@ curl -sS -i "$HSR_URL/api/auth/discord/login/callback?code=<code>&state=<state>"
 - On success for an **existing account**: clears the legacy Discord-name stand-in from `name`/`displayName` if still present, updates Discord fields, writes a `LOGIN` `ActivityLog` entry
 - Either way: best-effort joins the guild (`addGuildMember`), syncs Discord roles, sets the `auth-token` cookie, and redirects — to `/mobile-callback`/`/game-callback` only if the account already has a `robloxId` (an account without one is not usable by those clients yet), to `/link-roblox` if `robloxId` is still null, otherwise to `returnUrl` or `/dashboard`
 - `302` → `/login?error=auth_failed` on any other thrown error
+
+## Member: Account, Settings and Legal
+
+### `GET /api/profile/notifications`
+
+**Why:** The member's notification settings: for every topic, whether it arrives by email and/or as a Discord DM from the HSR bot. Also tells the settings page whether Discord recently refused a DM (DMs closed).
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/profile/notifications"
+```
+
+**Response:**
+```json
+{
+  "topics": [
+    { "topic": "training", "email": true, "discord": true, "discordAvailable": true },
+    { "topic": "duty", "email": true, "discord": false, "discordAvailable": true },
+    { "topic": "support", "email": true, "discord": true, "discordAvailable": true },
+    { "topic": "documents", "email": true, "discord": true, "discordAvailable": true },
+    { "topic": "general", "email": true, "discord": true, "discordAvailable": true }
+  ],
+  "email": { "address": "member@example.com" },
+  "discord": { "linked": true, "failedAt": null }
+}
+```
+- Topics: `training` (training, closing exam, supervisions), `duty` (duty, schedule, warnings, leave), `support` (tickets), `documents`, `instructor` (shown to instructors only), `general` (announcements, Wrapped, new-device sign-in DM), `staff` (admin reports; shown to admin-panel users only).
+- `discordAvailable: false` means no Discord message exists for that topic.
+- `discord.failedAt` is the time Discord last refused a DM to this member; cleared by the next one that arrives.
+- Security, legal and purchase emails are always sent, whatever is switched off.
+
+---
+
+### `PATCH /api/profile/notifications`
+
+**Why:** Save the notification settings.
+
+**Auth:** Session or bearer. Logged as `NOTIFICATION_SETTINGS_UPDATED`.
+
+**Request:** JSON body — `emailMuted` and `discordMuted`: the topics to switch **off** on each channel. Everything not listed is on; unknown topics are ignored.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"emailMuted":["general"],"discordMuted":["duty"]}' "$HSR_URL/api/profile/notifications"
+```
+
+**Response:** `{ "emailMuted": ["general"], "discordMuted": ["duty"] }`. `400 { "error": "Invalid body" }` when either list is missing.
+
+---
+
+### `POST /api/legal/accept`
+
+**Why:** Accept the Terms of Service and the Privacy Policy version in force. While a published version is not accepted, the web app sends the member to `/terms/accept` on every page (`user.legal.mustAccept` in `GET /api/auth/session`); external clients should show their own acceptance screen.
+
+**Auth:** Session or bearer. Logged as `LEGAL_ACCEPT`; the acceptance is stored with its time, IP address and browser.
+
+**Request:** JSON body `{ "versionId": "…" }` — the version the member was shown (from `GET /api/legal/current`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"versionId":"clv1234567890"}' "$HSR_URL/api/legal/accept"
+```
+
+**Response:** `{ "ok": true, "versionId": "clv1234567890" }`. Accepting twice is harmless (the first record is kept). Errors: `400` missing `versionId`, `404 { "error": "Nothing to accept" }` (no version published), `409 { "error": "A newer version has been published", "versionId": "…" }` — show the new version and ask again.
+
+---
+
+### `POST /api/account/export`
+
+**Why:** Download everything HSR stores about the caller as one JSON file (GDPR access / portability): account, profile, training, exams, duties, badges, praise, suspensions, strikes, notification settings, Terms acceptances and the activity log. Credentials and abuse-investigation fields (IP addresses) are left out.
+
+**Auth:** Session (cookie). Rate limited. Logged as `DATA_EXPORT`.
+
+```bash
+curl -sS -X POST -OJ -b cookies.txt "$HSR_URL/api/account/export"
+```
+
+**Response:** A JSON file download, `hsr-export-YYYY-MM-DD.json`. Long lists are capped at the 2000 most recent rows.
+
+---
+
+### `POST /api/account/unlink`
+
+**Why:** Detach the Discord or the Roblox account from the caller's HSR account (to link a different one). The account must keep at least one identity.
+
+**Auth:** Session (cookie). Logged as `DISCORD_UNLINK` / `ROBLOX_UNLINK`. The session cookie is re-signed so the change takes effect at once.
+
+**Request:** JSON body `{ "platform": "discord" | "roblox" }`.
+
+```bash
+curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" -d '{"platform":"roblox"}' \
+  "$HSR_URL/api/account/unlink"
+```
+
+**Response:** `{ "ok": true, "linkUrl": "/link-roblox" }` — where to link the new one. Errors: `400 invalid_platform | not_linked`, `404 not_found`, `409 last_identity`.
+
+---
+
+### `GET /api/profile/reminders`
+
+**Why:** When the member wants their duty reminder push notifications, in minutes before the duty.
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/profile/reminders"
+```
+
+**Response:** `{ "offsets": [30, 10, 5], "choices": [120, 60, 45, 30, 20, 15, 10, 5], "max": 4 }` — the default is 30, 10 and 5 minutes; an empty `offsets` means reminders are off.
+
+---
+
+### `PATCH /api/profile/reminders`
+
+**Why:** Change the reminder times.
+
+**Auth:** Session or bearer.
+
+**Request:** JSON body `{ "offsets": [60, 10] }` — values outside `choices` are dropped, at most 4 are kept; `[]` switches reminders off.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"offsets":[60,10]}' "$HSR_URL/api/profile/reminders"
+```
+
+**Response:** `{ "offsets": [60, 10] }`.
+
+---
+
+### `GET /api/profile/goals`
+
+**Why:** The member's own weekly/monthly targets (duties, minutes on duty, distance) with progress.
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/profile/goals"
+```
+
+**Response:** `{ "goals": [{ "metric": "MINUTES", "period": "WEEK", "target": 240, "current": 95, "fraction": 0.4, "met": false, "remaining": 145 }], "limits": { "DUTIES": { "WEEK": 60, "MONTH": 250 }, "MINUTES": { "WEEK": 3000, "MONTH": 12000 }, "DISTANCE_KM": { "WEEK": 20000, "MONTH": 80000 } } }`.
+
+---
+
+### `POST /api/profile/goals`
+
+**Why:** Set or clear one goal.
+
+**Auth:** Session or bearer.
+
+**Request:** JSON body — `period` (`WEEK` | `MONTH`), `metric` (`DUTIES` | `MINUTES` | `DISTANCE_KM`), `target` (number; `0` or less clears the goal; must not exceed the limit).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"period":"WEEK","metric":"MINUTES","target":240}' "$HSR_URL/api/profile/goals"
+```
+
+**Response:** `{ "goals": [ … ] }` — every goal after the change. `400 { "error": "Unknown goal" }`, `400 { "error": "invalid" | "too-large", "limit": 3000 }`.
+
+---
+
+### `GET /api/profile/league`
+
+**Why:** The member's division league standing and this week's challenge progress (also records the challenge as completed once it is met).
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/profile/league"
+```
+
+**Response:** `{ "standing": { …division, rank, score… } | null, "challenge": { "challenge": { …, "target": 10 }, "current": 4, "fraction": 0.4, "met": false, "remaining": 6 } }`.
+
+---
+
+### `POST /api/profile/me/favorite-locomotive`
+
+**Why:** Upload a photo of the member's favourite locomotive for their profile (a supporter perk).
+
+**Auth:** Session or bearer; supporters only (`403 { "error": "forumSupporterOnly" }`).
+
+**Request:** `multipart/form-data` with `file` — JPEG, PNG or WebP, at most 5 MB.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -F "file=@loco.webp" \
+  "$HSR_URL/api/profile/me/favorite-locomotive"
+```
+
+**Response:** `{ "imageUrl": "https://s3.hsrgames.hu/favorite-locomotives/…" }`. `400 forumBadgeNoFile | profileLocomotiveImageType | profileLocomotiveImageTooLarge`, `503 forumStorageUnavailable`.
+
+---
+
+### `DELETE /api/profile/me/favorite-locomotive`
+
+**Why:** Remove the favourite locomotive photo.
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/profile/me/favorite-locomotive"
+```
+
+**Response:** `{ "ok": true }`.
+
+---
+
+### `GET /api/changelog`
+
+**Why:** Feeds the site-wide "what's new" popup with the changelog entries a member has not seen yet, mirrored from the Discord changelog channel.
+
+**Auth:** Session cookie or bearer (`getSessionWithBearer()`). A signed-out visitor is answered `{ entries: [], total: 0, seenUpTo: null }` with status 200 rather than 401 — the popup is mounted on public pages too.
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/changelog" -b cookies.txt
+```
+
+**Response:**
+
+```json
+{
+  "entries": [
+    { "id": "abc123", "title": "New feature", "content": "...", "publishedAt": "2026-09-10T12:00:00.000Z" }
+  ],
+  "total": 1,
+  "seenUpTo": "2026-09-05T00:00:00.000Z"
+}
+```
+On any internal failure it still returns 200 with the empty shape.
+
+---
+
+### `POST /api/changelog`
+
+**Why:** Dismisses the popup, marking everything up to the newest entry the client actually rendered as seen (never marks an entry posted while the dialog was open).
+
+**Auth:** Session cookie or bearer. 401 for a signed-out caller.
+
+**Request:** JSON body: `seenUpTo` (string, required — an ISO date parseable by `new Date()`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"seenUpTo":"2026-09-10T12:00:00.000Z"}' \
+  "$HSR_URL/api/changelog"
+```
+
+**Response:**
+
+```json
+{ "success": true }
+```
+Errors: 400 `{"error":"Invalid body"}` (unparsable JSON) or `{"error":"seenUpTo must be a date"}` (missing/invalid date); 500 `{"error":"Failed to save"}`.
+
+---
+
+### `GET /api/profile/praise`
+
+**Why:** Answers "have I already thanked this colleague?" for the praise dialog on their profile, plus the list of praise reasons to offer.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** Query param `userId` (optional — the colleague being viewed).
+
+```bash
+curl -sS "$HSR_URL/api/profile/praise?userId=u2" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "reasons": ["helpful", "friendly", "..."], "alreadyPraised": false }`.
+
+---
+
+### `POST /api/profile/praise`
+
+**Why:** Gives a "+1" to a colleague worked with in the last `PRAISE_WINDOW_HOURS`, then re-syncs both members' badges immediately (a threshold may have just been crossed).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body: `toUserId` (string, required), `reason` (string, optional), `message` (string, optional).
+
+```bash
+curl -sS -X POST "$HSR_URL/api/profile/praise" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"toUserId":"u2","reason":"helpful","message":"Thanks for the assist!"}'
+```
+
+**Response:** `{ "ok": true, "id": "praise_1" }`. Errors: `400 "SELF"` / `"INVALID"`, `409 "ALREADY_PRAISED"`.
+
+---
+
+### `GET /api/profile/weekly-duty`
+
+**Why:** The signed-in member's progress toward their weekly duty-hour minimum (prorated for approved leave), plus their active/recent weekly-duty strikes and whether they're appealable.
+
+**Auth:** session/bearer (`getSessionWithBearer`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/profile/weekly-duty" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "weekStart": "2026-09-07T00:00:00.000Z",
+  "weekEnd": "2026-09-13T23:59:59.999Z",
+  "minimumSeconds": 21600,
+  "minimumHours": 6,
+  "totalSeconds": 10800,
+  "totalHours": 3,
+  "progressPercent": 50,
+  "isEligible": true,
+  "isExempted": false,
+  "canDrive": true,
+  "canDispatch": false,
+  "canInspect": false,
+  "activeStrike": null,
+  "recentStrikes": []
+}
+```
+`401` unauthenticated, `404 "User not found"`.
+
+---
+
+### `GET /api/profile/locomotives`
+
+**Why:** Feeds the "favourite locomotive" picker in the profile editor with the locomotive chip pool (number + photo) — a shortcut, not the exhaustive set of valid answers (a free-text field also exists).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/profile/locomotives" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "chips": [{ "id": "c1", "number": "V63 001", "imageUrl": "https://...", "operator": "MÁV" }] }`.
+
+---
+
+### `GET /api/profile/me`
+
+**Why:** The signed-in member's own profile, including sections they've hidden from the public (`includeHidden: true`), plus the banner presets and whether Spotify linking is available.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/profile/me" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "profile": {...ProfileView}, "spotifyAvailable": true, "bannerPresets": [...] }`. `404 "Profile not found"` (should not normally happen — `ensureProfile()` elsewhere creates it).
+
+---
+
+### `PATCH /api/profile/me`
+
+**Why:** Edits the signed-in member's own profile fields (handle, motto, accent colour, banner preset/framing, favourite locomotive, visibility, section toggles). Every rule is re-validated server-side since the editor is a form a `fetch` call can skip.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body, all fields optional (absent = unchanged, `null` = clear): `handle` (string|null), `motto` (string|null, ≤`MOTTO_MAX_LENGTH`), `accentColor` (hex string|null), `bannerPreset` (string key|null), `bannerPosX`/`bannerPosY`/`bannerZoom` (number, clamped), `favoriteLocomotive` (string|null), `favoriteChipId` (string|null), `visibility` (`PUBLIC`|`MEMBERS`|`PRIVATE`), `showStats`/`showBadges`/`showSpotify`/`showPraise` (boolean).
+
+```bash
+curl -sS -X PATCH "$HSR_URL/api/profile/me" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"motto":"Always on time","visibility":"PUBLIC"}'
+```
+
+**Response:** `{ "profile": {...updated ProfileView} }`. Errors: `400 "handleFormat"` / `"handleReserved"` / `"accentInvalid"` / `"bannerInvalid"` / `"visibilityInvalid"` / `"Nothing to update"`, `404 "chipNotFound"`, `409 "handleTaken"`.
+
+---
+
+### `GET /api/profile/stats`
+
+**Why:** The dashboard's own duty/game-activity stats for the signed-in member — today/week/month/all-time duty minutes and game joins, a 7-day activity chart, and their monthly duty-count leaderboard rank.
+
+**Auth:** session/bearer (`getSessionWithBearer`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/profile/stats" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "today": { "duties": 1, "completedDuties": 1, "activeDuty": false, "totalMinutes": 120, "gameJoins": 2 },
+  "week": { "duties": 4, "totalMinutes": 480, "gameJoins": 6 },
+  "month": { "duties": 12, "totalMinutes": 1440, "gameJoins": 20, "byType": { "trainDriver": 8, "trainDispatcher": 4 } },
+  "allTime": { "duties": 130, "gameJoins": 210 },
+  "activeDuty": null,
+  "leaderboardRank": 5,
+  "chart": [{ "date": "2026-09-07", "duties": 1, "gameJoins": 1, "minutes": 90 }]
+}
+```
+`401` unauthenticated.
+
+---
+
+### `DELETE /api/profile/me/spotify`
+
+**Why:** Unlinks the signed-in member's Spotify account by clearing the stored refresh token (never just a flag, so "unlinked" and "still holds a token" can't disagree).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No body.
+
+```bash
+curl -sS -X DELETE "$HSR_URL/api/profile/me/spotify" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "ok": true }`.
+
+---
+
+### `GET /api/profile/me/badges`
+
+**Why:** The signed-in member's badge shelf: held badges (with pin state) and the not-yet-held catalogue with progress bars toward automatic rules. Also re-syncs automatic badges on load.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/profile/me/badges" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "held": [{ "id": "b1", "key": "jo-kolega", "name": "Jó kolléga", "nameEn": "Good Colleague", "imageUrl": null, "emoji": "🤝", "rarity": "COMMON", "category": "SOCIAL", "pinned": true, "awardedAt": "2026-01-01T00:00:00.000Z", "reason": null }],
+  "available": [{ "id": "b2", "key": "veteran", "name": "Veterán", "progress": { "current": 400, "threshold": 1000 } }],
+  "maxPinned": 3
+}
+```
+
+---
+
+### `PATCH /api/profile/me/badges`
+
+**Why:** Sets which held badges are pinned above the rest (whole set replaced at once, so the client can't bypass the pin cap).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body: `pinned` (array of badge ids, ≤`MAX_PINNED_BADGES`, must all be badges the member holds).
+
+```bash
+curl -sS -X PATCH "$HSR_URL/api/profile/me/badges" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"pinned":["b1","b2"]}'
+```
+
+**Response:** `{ "ok": true, "pinned": ["b1","b2"] }`. `400 "tooManyPinned"` / `"notHeld"`.
+
+---
+
+### `POST /api/profile/me/banner`
+
+**Why:** Uploads a custom banner image to R2 for the profile header, replacing any preset and deleting the previous uploaded file (best-effort, after the new one is live).
+
+**Auth:** session/bearer (`requireAuth`); requires R2 configured.
+
+**Request:** `multipart/form-data` with a `file` field — image/jpeg, image/png, image/webp or image/gif, ≤5MB.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/profile/me/banner" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@banner.jpg;type=image/jpeg"
+```
+
+**Response:** `{ "bannerUrl": "https://s3.hsrgames.hu/profile-banners/<userId>/<uuid>.jpg" }`. `503 "Storage not configured"`, `400 "No file provided"` / `"bannerType"` / `"bannerTooLarge"`.
+
+---
+
+### `DELETE /api/profile/me/banner`
+
+**Why:** Reverts the profile banner to a preset, deleting the uploaded object since nothing references it any more.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No body.
+
+```bash
+curl -sS -X DELETE "$HSR_URL/api/profile/me/banner" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "ok": true }`.
+
+---
+
+### `GET /api/search`
+
+**Why:** The Command Palette's (⌘K) one endpoint. Filtering happens server-side, never in the client palette, because a member who may not open the user list must not be able to read names out of it by typing. Page results ask the same navigation permission checks the sidebars use (`src/lib/search/pages.ts`); member results apply the exact profile-visibility rule the profile page enforces (a `PRIVATE` profile or a banned account is invisible without `MANAGE_USERS`).
+
+**Auth:** session (`requireAuth()`).
+
+**Request:** query param — `q` (string, trimmed and capped at 64 chars; queries under 2 characters return an empty result set without querying anything).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/search?q=jarmu"
+```
+
+**Response:** two groups — pages and members — each capped at 6, and 20 results in total; `truncated` reports whether any group was cut.
+```json
+{
+  "query": "jarmu",
+  "results": [
+    { "id": "page:vehicles", "kind": "page", "title": "Járművek", "href": "/admin/locomotive-pool" },
+    { "id": "member:clu9...", "kind": "member", "title": "Kovács János", "subtitle": "Train Driver", "href": "/profile/kovacs" }
+  ],
+  "truncated": false
+}
+```
+
+---
+
+### `GET /api/sessions`
+
+**Why:** Lists the caller's own active web and mobile sessions (for the "manage devices" settings page), marking which one is the current browser session.
+
+**Auth:** session.
+
+**Request:** no parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/sessions"
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "clw1...",
+    "type": "web",
+    "deviceInfo": "Chrome on macOS",
+    "ipAddress": "203.0.113.4",
+    "lastUsedAt": "2026-09-13T09:00:00.000Z",
+    "createdAt": "2026-09-01T09:00:00.000Z",
+    "expiresAt": "2026-09-15T09:00:00.000Z",
+    "isCurrent": true
+  },
+  {
+    "id": "clm1...",
+    "type": "mobile",
+    "deviceInfo": "iPhone 15",
+    "ipAddress": null,
+    "lastUsedAt": "2026-09-12T10:00:00.000Z",
+    "createdAt": "2026-08-01T10:00:00.000Z",
+    "expiresAt": "2026-11-01T10:00:00.000Z",
+    "isCurrent": false
+  }
+]
+```
+
+---
+
+### `DELETE /api/sessions`
+
+**Why:** Revoke one specific session (log out a specific device) — self-only, this is not an admin session-management endpoint.
+
+**Auth:** session; ownership is enforced by fetching the target session and comparing `userId` to the caller (404 rather than 403 if it belongs to someone else, to avoid confirming the id exists).
+
+**Request:** JSON body — `sessionId` (string, required), `type` (`"web" | "mobile"`, required).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"sessionId":"clm1...","type":"mobile"}' \
+  "$HSR_URL/api/sessions"
+```
+
+**Response:** `{ "success": true }`. `400` missing fields or invalid `type`; `404` session not found or not owned by the caller.
+
+---
+
+### `POST /api/sessions/revoke-all`
+
+**Why:** "Log out everywhere else" — revokes every other web session and every mobile session, keeping the browser tab that made the request signed in.
+
+**Auth:** session; self-only by construction (`userId: session.id` on both update queries). The current web session id is excluded via `getWebSessionIdFromToken()`.
+
+**Request:** no body.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/sessions/revoke-all"
+```
+
+**Response:**
+```json
+{ "success": true, "revokedCount": 3 }
+```
+
+---
+
+### `GET /api/user/confirm-account`
+
+**Why:** Tells a member logging in via Roblox whether they need to confirm ownership of an account the game server auto-created before they ever signed up — a fresh account with no game history is silently marked confirmed instead of asking.
+
+**Auth:** Session (`getSession()`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/user/confirm-account"
+```
+
+**Response (needs confirmation):**
+```json
+{
+  "needsConfirmation": true,
+  "account": { "id": "clu...", "robloxId": "12345", "name": "Kovacs123", "displayName": null, "image": "https://tr.rbxcdn.com/...", "totalPlayTime": 3600, "totalSessions": 5, "createdAt": "2026-01-02T10:00:00.000Z", "discordLinked": false }
+}
+```
+Or `{ "needsConfirmation": false }`. Errors: `401` unauthenticated, `404` user not found, `500` on failure.
+
+---
+
+### `POST /api/user/confirm-account`
+
+**Why:** Records the member's answer to the confirmation prompt: `"confirm"` accepts the auto-created game history as their own; `"reject"` keeps the account (Roblox OAuth already proved the `robloxId` is theirs) but zeroes the stats, since they don't want that play history attributed to them.
+
+**Auth:** Session (`getSession()`).
+
+**Request:** JSON body — `action` (`"confirm" | "reject"`, required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"confirm"}' \
+  "$HSR_URL/api/user/confirm-account"
+```
+
+**Response:** `{ "success": true }`. Errors: `400` invalid/missing action, `401` unauthenticated, `500` on failure.
+
+---
+
+### `GET /api/user/me`
+
+**Why:** The caller's own core account fields, for both web (cookie session) and mobile (bearer token) clients.
+
+**Auth:** Session or bearer (`getSessionWithBearer()`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/user/me"
+```
+
+**Response:**
+```json
+{
+  "id": "clu...", "robloxId": "12345", "name": "Kovacs123", "displayName": "Kovács János",
+  "image": "https://tr.rbxcdn.com/...", "steamId": null, "discordId": "9876543210",
+  "discordUsername": "kovacsj", "discordAvatar": "abcd1234", "discordRole": "Train driver",
+  "role": "USER", "banned": false, "createdAt": "2025-11-01T09:00:00.000Z",
+  "lastLoginAt": "2026-09-13T08:00:00.000Z", "locale": "hu"
+}
+```
+Errors: `401` unauthenticated, `404` user not found, `500` on failure.
+
+---
+
+### `PATCH /api/user/me`
+
+**Why:** Lets the member edit the two fields the site itself owns for them — their display name and their language preference. Roblox/Discord-sourced fields are never editable here.
+
+**Auth:** Session or bearer (`getSessionWithBearer()`).
+
+**Request:** JSON body — `displayName` (string, 1-32 chars, optional), `locale` (must be one of `SUPPORTED_LOCALES`, optional). At least one must be present.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"locale":"en"}' \
+  "$HSR_URL/api/user/me"
+```
+
+**Response:** `{ "success": true, "user": { "id": "clu...", "displayName": "...", "locale": "en", ... } }`. Errors: `400` invalid displayName length/locale or no valid fields, `401` unauthenticated, `500` on failure.
+
+---
+
+### `GET /api/user/[userId]`
+
+**Why:** A minimal public-ish lookup of another user's basic identity (name, rank, avatar) — used where a UI needs to display who a duty/schedule row belongs to.
+
+**Auth:** Session or bearer (`getSessionWithBearer()`) — any authenticated caller, no ownership or permission check on the target `userId`.
+
+**Request:** Path param `userId` (string, required).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/user/clu1234567890"
+```
+
+**Response:**
+```json
+{ "id": "clu1234567890", "robloxId": "12345", "name": "Kovacs123", "displayName": "Kovács János", "image": "https://tr.rbxcdn.com/...", "discordRole": "Train driver", "role": "USER" }
+```
+Errors: `401` unauthenticated, `404` user not found, `500` on failure.
+
+## Member: Duty and Railway Operations
+
+### `GET /api/cargo/orders`
+
+**Why:** Lists today's still-available cargo shipments for a member qualified to haul freight, so they can pick one before starting a `CARGO_DRIVER` duty.
+
+**Auth:** Session cookie or bearer, plus `permissions.isCargoGroup()` (the cargo-qualified Discord role group). 403 otherwise.
+
+**Request:** No parameters — always today's date (UTC midnight).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/cargo/orders"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "clx1",
+    "date": "2026-09-13T00:00:00.000Z",
+    "orderNumber": 12,
+    "status": "AVAILABLE",
+    "wagonCount": 8,
+    "totalWeightT": 640,
+    "takenByUserId": null
+  }
+]
+```
+500 `{"error":"Internal server error"}` on failure.
+
+---
+
+### `POST /api/dispatch-orders`
+
+**Why:** Lets a dispatcher on active duty draft a written dispatch order ("írásbeli rendelkezés") addressed to a specific driver who is also on active duty.
+
+**Auth:** Session cookie or bearer, plus `permissions.canUseDispatchOrders()`, plus an active `TRAIN_DISPATCHER` duty (`getActiveDispatcherDuty`). 403 without either.
+
+**Request:** JSON body: `content` (string, required, trimmed non-empty), `recipientId` (string, required — must be a user currently on an active `TRAIN_DRIVER` duty).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Kérem várjon a 3-as vágányon.","recipientId":"user_123"}' \
+  "$HSR_URL/api/dispatch-orders"
+```
+
+**Response:**
+
+```json
+{
+  "id": "ord_1",
+  "status": "DRAFT",
+  "content": "Kérem várjon a 3-as vágányon.",
+  "issuerId": "user_dispatcher",
+  "recipientId": "user_123",
+  "createdAt": "2026-09-13T10:00:00.000Z"
+}
+```
+Errors: 403 `{"error":"Nincs jogosultság az írásbeli rendelkezésekhez"}`, 403 `{"error":"Nincs aktív forgalmi szolgálat"}`, 400 `{"error":"A rendelkezés tartalma kötelező"}` / `{"error":"Címzett megadása kötelező"}`, 400 `{"error":"A címzett nincs aktív mozdonyvezetői szolgálatban"}`.
+
+---
+
+### `GET /api/dispatch-orders`
+
+**Why:** Lists every dispatch order the caller is party to — everything they issued, plus everything addressed to them once it has left DRAFT.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "ord_1",
+    "status": "FINALIZED",
+    "content": "Kérem várjon a 3-as vágányon.",
+    "issuerId": "user_dispatcher",
+    "recipientId": "user_123",
+    "revision": 0,
+    "createdAt": "2026-09-13T10:00:00.000Z"
+  }
+]
+```
+
+---
+
+### `GET /api/duty/booking`
+
+**Why:** The caller's own DRIVER schedule bookings (`ScheduleRequest` rows) for today and onward, shaped for the duty page's booking board.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** Query param `date` (optional, `YYYY-MM-DD`; defaults to today UTC) — returned bookings are `date >= filterDate`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/booking?date=2026-09-14"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "req_1",
+    "pairGroup": "IC101",
+    "fordaGroup": "F1",
+    "operator": "MÁV",
+    "date": "2026-09-14T00:00:00.000Z",
+    "status": "PENDING",
+    "trackNumber": null,
+    "responseNote": null
+  }
+]
+```
+
+---
+
+### `POST /api/duty/booking`
+
+**Why:** Lets a Train Driver reserve a train pair for a future day (or, within an hour of departure, for today) — the advance-booking half of the duty flow.
+
+**Auth:** Session cookie or bearer, plus `permissions.canDrive()`. 403 `{"error":"Only Train Drivers can book train pairs"}` otherwise.
+
+**Request:** JSON body: `pairGroup` (string, required), `date` (string, required, parseable date). Booking week is Monday–Sunday (`getBookingWindow`) unless the train departs within 60 minutes today ("last-minute booking").
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"pairGroup":"IC101","date":"2026-09-14"}' \
+  "$HSR_URL/api/duty/booking"
+```
+
+**Response (201):**
+
+```json
+{
+  "id": "req_1",
+  "pairGroup": "IC101",
+  "fordaGroup": "F1",
+  "operator": "MÁV",
+  "date": "2026-09-14T00:00:00.000Z",
+  "status": "PENDING",
+  "trackNumber": null,
+  "responseNote": null
+}
+```
+Errors: 400 `{"error":"pairGroup and date are required"}`, `{"error":"Invalid date"}`, `{"error":"Driver requests can only be made for the current booking week (Monday to Sunday)"}`, `{"error":"No outbound train found for this pair group"}`, `{"error":"You already have a booking for this train pair on this date"}`, `{"error":"This train pair is already booked for this date"}`; **booking time conflict** — 400 with a localized `error` message from `conflictMessage()` (built from `DRIVER_CONFLICT_MINUTES` = 120) plus a `conflicts` array naming the other train and its departure.
+
+---
+
+### `POST /api/duty/dispatcher-booking`
+
+**Why:** Lets a dispatcher reserve a future hour-long dispatcher slot in advance (max 5 dispatchers per hour).
+
+**Auth:** Session cookie or bearer, plus `permissions.canDispatch()`. 403 otherwise.
+
+**Request:** JSON body: `date` (string `YYYY-MM-DD`, required, must be strictly after today per `getTodayStoredBudapestDate()`), `hour` (number 0–23, required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"date":"2026-09-14","hour":18}' \
+  "$HSR_URL/api/duty/dispatcher-booking"
+```
+
+**Response (201):**
+
+```json
+{
+  "id": "book_1",
+  "userId": "user_1",
+  "date": "2026-09-14T00:00:00.000Z",
+  "hour": 18,
+  "status": "PENDING",
+  "scheduleRequestId": "req_2"
+}
+```
+Errors: 400 `{"error":"date and hour (0–23) are required"}`, `{"error":"Invalid date"}`, `{"error":"Bookings are only available for future dates. For today, start duty directly."}`; 409 `{"error":"This slot is full (max 5 dispatchers)"}`, `{"error":"You already booked this slot"}`.
+
+---
+
+### `DELETE /api/duty/dispatcher-booking`
+
+**Why:** Cancels the caller's own dispatcher slot booking (and its underlying `ScheduleRequest`), as long as it has not already been approved.
+
+**Auth:** Session cookie or bearer. The booking must belong to the caller.
+
+**Request:** Query param `id` (string, required — the booking id).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/duty/dispatcher-booking?id=book_1"
+```
+
+**Response:**
+
+```json
+{ "success": true }
+```
+Errors: 400 `{"error":"id is required"}`; 404 `{"error":"Booking not found"}`; 403 `{"error":"Not your booking"}`, `{"error":"Cannot cancel an approved booking"}`.
+
+---
+
+### `GET /api/duty/available-trains`
+
+**Why:** Populates the driver's Start-duty train picker: which trains are free, taken, past their departure grace, or reserved — including the caller's own booking-time conflicts, so the board explains itself before the click.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/available-trains?date=2026-09-13"
+```
+
+**Response:**
+
+```json
+{
+  "outboundTrains": [
+    {
+      "id": "train_1",
+      "trainNumber": "9601",
+      "trainType": "IC",
+      "departureTime": "08:34",
+      "isAvailable": false,
+      "isReservedForMe": true,
+      "unavailableReason": null,
+      "timeConflict": { "trainNumber": "9701", "departureTime": "09:10", "minutesApart": 36 },
+      "pairGroup": "IC101",
+      "direction": 0
+    }
+  ],
+  "returnTrains": [],
+  "myApprovedRequests": [{ "id": "req_1", "pairGroup": "IC101", "status": "APPROVED" }],
+  "currentTime": "08:20"
+}
+```
+`unavailableReason` values include `"Assigned to <name>"`, `"Departed"` (only once past `DEPARTURE_GRACE_MINUTES`, i.e. `isPastDepartureGrace`), `"Reserved by <name>"`. 500 `{"error":"Failed to get available trains"}` on failure.
+
+---
+
+### `POST /api/duty/start`
+
+**Why:** Opens a duty of any type (`TRAIN_DRIVER`, `TRAIN_DISPATCHER`, `CARGO_DRIVER`, `TICKET_INSPECTOR`) — the single entry point that enforces every rank, suspension, trainee and reservation rule before real service begins.
+
+**Auth:** Session cookie or bearer, plus `dbUser.isActiveInGame` (or `role === "ADMIN"`). Per-type permission: `CAN_DRIVE` (`canDrive()`) or trainee driver, `CAN_DISPATCH` (`canDispatch()`), `isCargoGroup()`, or `CAN_INSPECT` (`canInspect()`). Checks `permissions.suspensionFor(scope)` for the duty's `SuspensionScope` (via `scopeForDutyType`) before the permission checks, so a trainee holding no flag is still blocked.
+
+**Request:** JSON body: `dutyType` (required, one of the four types), plus type-specific fields: `startLocationId` (required for TRAIN_DRIVER), `trainIds` (array, optional), `trackNumber` (string, optional), `scheduleRequestId`/`scheduleRequestIds` (optional), `watchingStationIds` (array, required for TRAIN_DISPATCHER), `dispatcherPosition` (optional, one of `főrendelkező|rendelkező|külsős|gyakornok`), `cargoOrderId` (required for CARGO_DRIVER), `inspectorBookingId`/`inspectorPairGroup` (optional for TICKET_INSPECTOR), `notes` (optional).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"dutyType":"TRAIN_DRIVER","startLocationId":"loc_1","trainIds":["train_1","train_2"]}' \
+  "$HSR_URL/api/duty/start"
+```
+
+**Response (201):** the created `Duty` with `user`, `startLocation`, `assignedTrains` (with train + stops + station), `cargoOrder`.
+
+Notable errors: 403 suspension — `{"error":"You are suspended from <scope> service.","suspension":{"scope":"DRIVER","reason":"...","expiresAt":"2026-10-01T00:00:00.000Z"}}`; 403 `{"error":"Trainee Drivers can only start duty after passing the closing exam."}`; 403 `{"error":"Trainee Drivers can only start duty by providing a track number, selecting trains is not allowed yet."}`; 403 `{"error":"Trainee Drivers cannot start duty against a schedule reservation."}`; 403 `{"error":"Trainee Ticket Inspectors cannot start duty against a specific service until their required supervisions are complete."}`; 400 `{"error":"You already have an active duty. Please end it first."}`; 400 departed-service — `{"error":"This service has already departed, the reservation can no longer be resumed."}`; 409 `{"error":"This inspector booking is no longer active."}`; 409 `{"error":"This shipment has already been taken. Please choose another."}`; 409 `{"error":"This schedule request is already linked to another duty."}`.
+
+---
+
+### `GET /api/duty/inspector-trains`
+
+**Why:** The ticket inspector's board of pairs their rank may work on a given day, with the driver holding each pair and who already booked it.
+
+**Auth:** Session cookie or bearer, plus `CAN_INSPECT` (`canInspect()`). 403 `{"error":"Only ticket inspectors can view inspector services"}` otherwise.
+
+**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/inspector-trains?date=2026-09-14"
+```
+
+**Response:**
+
+```json
+{
+  "date": "2026-09-14T00:00:00.000Z",
+  "pairs": [
+    { "pairGroup": "IC101", "driver": "user_1 name", "bookedBy": null, "isAllowed": true }
+  ]
+}
+```
+(shape from `buildInspectorBoard()`, spread after `date`.) 500 `{"error":"Failed to load inspector services"}` on failure.
+
+---
+
+### `GET /api/duty/dispatchers`
+
+**Why:** Lists every dispatcher currently on active duty — used by drivers/dispatchers to see who else is working the panel right now.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/dispatchers"
+```
+
+**Response:**
+
+```json
+[
+  { "userId": "user_1", "displayName": "Kovács János", "position": "főrendelkező" }
+]
+```
+
+---
+
+### `POST /api/duty/end`
+
+**Why:** Ends the caller's active duty (any type), releasing a claimed cargo order back to the pool, closing any Live Activity, and updating cumulative user stats.
+
+**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly, not `requireAuth()`).
+
+**Request:** JSON body (optional/empty allowed): `dutyId` (string, optional — defaults to the caller's current active duty if omitted), `notes` (string, optional).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$HSR_URL/api/duty/end"
+```
+
+**Response:** the updated `Duty` (`status: "COMPLETED"`, `endTime` set) with `user`, `startLocation`, `assignedTrains`, `cargoOrder`.
+
+Errors: 401 `{"error":"Unauthorized"}`; 404 `{"error":"No active duty found"}`; 500 `{"error":"Failed to end duty"}`.
+
+---
+
+### `GET /api/duty/inspector-booking`
+
+**Why:** The caller's own advance ticket-inspector bookings from a given date onward.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/inspector-booking?date=2026-09-14"
+```
+
+**Response:**
+
+```json
+[
+  { "id": "ib_1", "pairGroup": "IC101", "date": "2026-09-14T00:00:00.000Z", "status": "BOOKED", "dutyId": null }
+]
+```
+
+---
+
+### `POST /api/duty/inspector-booking`
+
+**Why:** Books a train pair in advance for a ticket inspector to ride — no dispatcher approval needed, unlike a driver's booking, because the inspector rides a service the driver already holds.
+
+**Auth:** Session cookie or bearer, plus `CAN_INSPECT` (`canInspect()`) — which is already false for a suspended inspector. Also refused for a trainee inspector still under the programme's supervision requirement (`permissions.isServiceTrainee("INSPECTOR")`). Requires `InspectorSettings.enabled`.
+
+**Request:** JSON body: `pairGroup` (string, required), `date` (string, required — must fall within the current Monday–Sunday booking week, and strictly after today Budapest time; today itself is refused since inspectors start duty directly instead).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"pairGroup":"IC101","date":"2026-09-14"}' \
+  "$HSR_URL/api/duty/inspector-booking"
+```
+
+**Response (201):**
+
+```json
+{ "id": "ib_1", "pairGroup": "IC101", "date": "2026-09-14T00:00:00.000Z", "status": "BOOKED", "dutyId": null }
+```
+Errors: 403 `{"error":"Only ticket inspectors can book inspector services"}`, `{"error":"Trainee Ticket Inspectors cannot book a service until their required supervisions are complete."}`, `{"error":"Inspector bookings are currently closed"}`, `{"error":"Your inspector rank is not qualified for this service"}`; 400 `{"error":"pairGroup and date are required"}`, `{"error":"Invalid date"}`, `{"error":"Inspector bookings can only be made for the current booking week (Monday to Sunday)"}`, `{"error":"No active train found for this pair group"}`, `{"error":"Inspector services are booked in advance — for today, just start your duty"}`, `{"error":"You already booked this service for this date"}`; 409 `{"error":"This service already has an inspector"}`.
+
+---
+
+### `DELETE /api/duty/inspector-booking`
+
+**Why:** Cancels the caller's own inspector booking, as long as it has not already turned into a duty.
+
+**Auth:** Session cookie or bearer. Booking must belong to the caller.
+
+**Request:** Query param `id` (string, required).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/duty/inspector-booking?id=ib_1"
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+Errors: 400 `{"error":"id is required"}`; 404 `{"error":"Booking not found"}`; 400 `{"error":"This booking is already in duty and cannot be cancelled"}`. Cancelling an already-`CANCELLED` booking still returns `{ "ok": true }`.
+
+---
+
+### `GET /api/duty/dispatcher-slots`
+
+**Why:** The 24-hour peak-hour dispatcher booking board — score/peak status per hour, who has booked each one, and whether the caller has a booking in it.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today, `getTodayStoredBudapestDate()`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/dispatcher-slots?date=2026-09-14"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "hour": 18,
+    "score": 42,
+    "isPeak": true,
+    "peakGroup": "evening",
+    "isPast": false,
+    "isFull": false,
+    "bookings": [{ "userId": "user_1", "displayName": "Kovács János", "image": null, "status": "PENDING" }],
+    "myBooking": { "id": "book_1", "status": "PENDING" }
+  }
+]
+```
+
+---
+
+### `GET /api/duty/my`
+
+**Why:** The full duty dashboard payload for the caller: their active duty (with a live consist match for `TRAIN_DRIVER`), today's completed duties, and this month's aggregate stats.
+
+**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly).
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/my"
+```
+
+**Response:**
+
+```json
+{
+  "activeDuty": { "id": "duty_1", "dutyType": "TRAIN_DRIVER", "consistMatch": { "matches": true } },
+  "todayDuties": [{ "id": "duty_0", "status": "COMPLETED" }],
+  "monthlyStats": { "totalDuties": 12, "totalMinutes": 720, "totalHours": 12 }
+}
+```
+401 `{"error":"Unauthorized"}`; 500 `{"error":"Failed to fetch user duties"}`.
+
+---
+
+### `GET /api/duty/active`
+
+**Why:** Every currently active duty on the site (all drivers/dispatchers, or filtered to one type) — used for "who's on now" views.
+
+**Auth:** Session cookie or bearer, via full `requireAuth()` (confirms the account still exists, not just that the JWT verifies).
+
+**Request:** Query param `type` (optional, one of `TRAIN_DRIVER`/`TRAIN_DISPATCHER`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/active?type=TRAIN_DRIVER"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "duty_1",
+    "dutyType": "TRAIN_DRIVER",
+    "user": { "id": "user_1", "displayName": "Kovács János" },
+    "assignedTrains": [{ "train": { "trainNumber": "9601" } }],
+    "consistMatch": { "matches": true }
+  }
+]
+```
+500 `{"error":"Failed to fetch active duties"}`.
+
+---
+
+### `POST /api/duty/next-train`
+
+**Why:** Switches an already-active `TRAIN_DRIVER` duty onto its next approved scheduled journey without ending the duty — asks the same rank/suspension/trainee questions `/api/duty/start` does, since it hands the duty real service just the same.
+
+**Auth:** Session cookie or bearer, plus `CAN_DRIVE` (`canDrive()`); checks `permissions.suspensionFor("DRIVER")` and refuses a service trainee (`isServiceTrainee("DRIVER")`).
+
+**Request:** JSON body: `scheduleRequestId` (string) or `scheduleRequestIds` (array of strings) — at least one required, must be APPROVED and belong to the caller.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scheduleRequestIds":["req_2"]}' \
+  "$HSR_URL/api/duty/next-train"
+```
+
+**Response:** the updated `Duty` with `assignedTrains` reset to the new pair's trains, `user`, `startLocation`, `cargoOrder`.
+
+Errors: 403 suspension — `{"error":"You are suspended from Train Driver service.","suspension":{...}}`; 403 `{"error":"Trainee Drivers cannot take a scheduled journey."}`; 403 `{"error":"You don't have permission to drive a scheduled journey."}`; 400 `{"error":"scheduleRequestId(s) required"}`, `{"error":"No active Train Driver duty"}`, `{"error":"Invalid or unapproved schedule request"}`; 404 `{"error":"One or more schedule requests not found"}`.
+
+---
+
+### `GET /api/dispatch-orders/active-drivers`
+
+**Why:** Lets a dispatcher on active duty see every driver currently on active duty, to pick a recipient for a new dispatch order.
+
+**Auth:** Session cookie or bearer, plus an active dispatcher duty (`getActiveDispatcherDuty`). 403 `{"error":"Nincs aktív forgalmi szolgálat"}` otherwise.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/active-drivers"
+```
+
+**Response:**
+
+```json
+[{ "userId": "user_123", "displayName": "Kovács János" }]
+```
+
+---
+
+### `GET /api/dispatch-orders/stream`
+
+**Why:** Live push of dispatch-order changes to the caller (new/updated orders addressed to or from them), so the dispatch order UI updates without polling.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** None. SSE stream, keep the connection open.
+
+```bash
+curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/stream"
+```
+
+**Response:** Server-Sent Events built with `createSSEResponse()`. On an update, a plain data frame is sent:
+```
+data: update
+
+```
+The client re-fetches `/api/dispatch-orders` (or the single order) on receipt; there is no payload beyond the event itself. Periodic `:` heartbeat comments keep the connection alive through proxies.
+
+---
+
+### `GET /api/dispatch-orders/[id]`
+
+**Why:** Fetches one dispatch order — for the issuer at any status, or for the recipient once it has left DRAFT (a draft is not yet visible to its addressee).
+
+**Auth:** Session cookie or bearer. Must be the issuer, or the recipient of a non-DRAFT order.
+
+**Request:** Path param `id`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1"
+```
+
+**Response:** the serialized order (same shape as the list endpoint). 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`.
+
+---
+
+### `PATCH /api/dispatch-orders/[id]`
+
+**Why:** Lets the issuer revise a `FINALIZED` order's content while it is still inside its edit window — resets both signatures and restarts the sign flow at `AWAITING_MV`, notifying the recipient they must sign again.
+
+**Auth:** Session cookie or bearer, must be the issuer, order must be `FINALIZED` and `isEditable(existing)` (inside `EDIT_WINDOW_MS`).
+
+**Request:** JSON body: `content` (string, required, trimmed non-empty).
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Módosított szöveg"}' \
+  "$HSR_URL/api/dispatch-orders/ord_1"
+```
+
+**Response:** the updated, re-serialized order (`status: "AWAITING_MV"`, `revision` incremented, sign timestamps cleared). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"A szerkesztési idő lejárt"}`; 400 `{"error":"A rendelkezés tartalma kötelező"}`. Also pushes a notification to the recipient.
+
+---
+
+### `POST /api/duty-appeal/[strikeId]`
+
+**Why:** Lets a driver appeal a weekly-duty strike using the token from their strike notification, before the appeal deadline. Notifies all admins by email on submission.
+
+**Auth:** Session cookie or bearer, plus a matching `token` supplied **in the JSON body** (not the URL) that must equal the strike's stored `appealToken`; the strike must belong to the caller.
+
+**Request:** Path param `strikeId`. JSON body: `token` (string, required — the one-time appeal token), `message` (string, required, trimmed non-empty).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"tok_abc","message":"Kórházban voltam aznap."}' \
+  "$HSR_URL/api/duty-appeal/strike_1"
+```
+
+**Response:**
+
+```json
+{ "success": true, "appealId": "appeal_1" }
+```
+Errors: 401 `{"error":"Authentication required"}`; 400 `{"error":"Token and message required"}`; 404 `{"error":"Strike not found"}`; 403 `{"error":"You can only submit your own appeal"}`, `{"error":"Invalid token"}`; 410 `{"error":"Appeal deadline has passed"}`; 409 `{"error":"Appeal already submitted"}`; 500 `{"error":"Failed to submit appeal"}`.
+
+---
+
+### `GET /api/duty/booking/stream`
+
+**Why:** Live push notifying the caller when one of their schedule-request bookings changes status (approved/rejected/etc.), so the booking board updates without polling.
+
+**Auth:** Session cookie or bearer.
+
+**Request:** None. SSE stream.
+
+```bash
+curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/booking/stream"
+```
+
+**Response:** SSE via `createSSEResponse()`. On a booking change:
+```
+data: update
+
+```
+The client re-fetches the booking list on receipt. Periodic heartbeat comments keep the connection open.
+
+---
+
+### `GET /api/duty/my/consist`
+
+**Why:** A lightweight poll (every 5s from the active-duty card) of just the caller's active `TRAIN_DRIVER` duty's consist snapshot and pool-match — avoiding the much heavier `/api/duty/my` payload for a value that changes constantly while driving.
+
+**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly).
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/my/consist"
+```
+
+**Response:**
+
+```json
+{
+  "activeDutyId": "duty_1",
+  "consistSnapshot": ["V43 001", "V43 002"],
+  "consistMatch": { "matches": true }
+}
+```
+If there is no active driver duty: `{ "activeDutyId": null, "consistSnapshot": null, "consistMatch": null }`. 401 `{"error":"Unauthorized"}`; 500 `{"error":"Failed to fetch duty consist"}`.
+
+---
+
+### `POST /api/dispatch-orders/[id]/sign-mv`
+
+**Why:** The recipient driver ("mozdonyvezető") signs a dispatch order that is awaiting their signature, advancing it to await the dispatcher's countersignature.
+
+**Auth:** Session cookie or bearer, must be the order's `recipientId`, order must be `status: "AWAITING_MV"`.
+
+**Request:** Path param `id`. No body.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/sign-mv"
+```
+
+**Response:** the updated order (`status: "AWAITING_FSZT"`, `mvSignedAt`/`mvSignName` set). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem írható alá"}`. Notifies the issuer via the SSE stream.
+
+---
+
+### `POST /api/dispatch-orders/[id]/sign-fszt`
+
+**Why:** The issuing dispatcher ("forgalmi szolgálattevő") gives the second, finalizing signature once the driver has signed — the order becomes legally complete (`FINALIZED`) and the driver is push-notified.
+
+**Auth:** Session cookie or bearer, must be the order's `issuerId`, order must be `status: "AWAITING_FSZT"`.
+
+**Request:** Path param `id`. No body.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/sign-fszt"
+```
+
+**Response:** the updated order (`status: "FINALIZED"`, `fsztSignedAt`/`fsztSignName` set). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem írható alá"}`. Sends a push notification "Rendelkezés véglegesítve" to the driver.
+
+---
+
+### `POST /api/dispatch-orders/[id]/send`
+
+**Why:** Issues a DRAFT (or re-sends an `AWAITING_MV`) order to the recipient, assigning it its permanent daily sequence number (`date` + `seq`) and edit-window deadline on first send only.
+
+**Auth:** Session cookie or bearer, must be the order's `issuerId`, order must be `status: "DRAFT"` or `"AWAITING_MV"`.
+
+**Request:** Path param `id`. No body.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/send"
+```
+
+**Response:** the updated order (`status: "AWAITING_MV"`, `date`/`seq`/`issuedAt`/`editableUntil` set on first send). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem küldhető"}`. Pushes "Új írásbeli rendelkezés" to the recipient.
+
+---
+
+### `GET /api/map/snapshot`
+
+**Why:** One-shot fetch of the live driver-position map data (for a client that doesn't want an SSE connection).
+
+**Auth:** session/bearer (`getSessionWithBearer`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/map/snapshot" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `getLiveMapData()`'s shape — an array/object of live driver positions and metadata; `[]` on an internal error rather than a 500, and `no-store` cache headers. `401` if unauthenticated.
+
+---
+
+### `GET /api/map/live`
+
+**Why:** SSE stream of the same live map data, pushed every 10 seconds, for a persistent live-updating view.
+
+**Auth:** session/bearer (`getSessionWithBearer`).
+
+**Request:** No parameters. Standard `EventSource` GET.
+
+```bash
+curl -sS -N "$HSR_URL/api/map/live" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `text/event-stream`; each event's `data` is a JSON payload from `getLiveMapData()`, sent immediately then every 10s. `401` (plain `Response`) if no session.
+
+---
+
+### `POST /api/missed-assignment-appeal/[id]`
+
+**Why:** Lets a driver/dispatcher appeal a missed-assignment strike via a one-time token from their notification, emailing every admin so the appeal can be reviewed.
+
+**Auth:** session/bearer (`getSessionWithBearer`) **and** a token-in-body matching the assignment's `appealToken` (single-use — cleared on submit). The caller must also own the assignment (`assignment.userId === session.id`).
+
+**Request:** `id` path param (missed assignment id). JSON body: `token` (string, required), `message` (string, required).
+
+```bash
+curl -sS -X POST "$HSR_URL/api/missed-assignment-appeal/assign_1" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"token":"abc123","message":"I was disconnected mid-shift."}'
+```
+
+**Response:** `{ "success": true, "appealId": "appeal_1" }`. Errors: `401` unauthenticated, `404 "Assignment not found"`, `403 "You can only submit your own appeal"` / `"Invalid token"`, `410 "Appeal deadline has passed"`, `409 "Appeal already submitted"`.
+
+---
+
+### `GET /api/route-permit`
+
+**Why:** Lists a driver's or dispatcher's own route permits (driver requests a permit from a dispatcher before running a service) plus, for a dispatcher, the incoming pending permits waiting on their approval. An admin-panel user sees everything.
+
+**Auth:** session (`requireAuth()`). No extra flag — visibility is scoped to `driverId`/`dispatcherId` matching the caller, unless `permissions.canViewAdminPanel()` is true, in which case every permit is returned.
+
+**Request:** no parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/route-permit"
+```
+
+**Response:**
+```json
+{
+  "mine": [
+    {
+      "id": "clx1...",
+      "driverId": "clu9...",
+      "dispatcherId": "clu8...",
+      "trainId": "clt1...",
+      "pairGroup": "IC-101",
+      "locomotiveNumber": "V63 001",
+      "departureStation": "Budapest",
+      "arrivalStation": "Győr",
+      "trainName": "IC 101",
+      "status": "PENDING",
+      "deletedByDriver": false,
+      "deletedByFszt": false,
+      "createdAt": "2026-09-13T05:00:00.000Z",
+      "driver": { "id": "clu9...", "displayName": "Kovács János", "name": "kovacs", "discordUsername": "kovacs#0" },
+      "dispatcher": { "id": "clu8...", "displayName": "Nagy Éva", "name": "nagy" },
+      "train": { "id": "clt1...", "trainNumber": "101", "trainType": "IC", "pairGroup": "IC-101", "fordaGroup": null, "stops": [] }
+    }
+  ],
+  "incoming": []
+}
+```
+
+---
+
+### `POST /api/route-permit`
+
+**Why:** A driver requests a route permit from a named dispatcher before starting a service. Departure/arrival stations are auto-derived from the train's own stops (accounting for direction) rather than trusted from the client.
+
+**Auth:** session; requires `permissions.canDrive()` (`CAN_DRIVE`), otherwise 403.
+
+**Request:** JSON body — `trainId` (string, required), `pairGroup` (string, required), `locomotiveNumber` (string, required), `trainName` (string, required), `dispatcherId` (string, required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"trainId":"clt1...","pairGroup":"IC-101","locomotiveNumber":"V63 001","trainName":"IC 101","dispatcherId":"clu8..."}' \
+  "$HSR_URL/api/route-permit"
+```
+
+**Response:** `201` with the created permit row. `400` if any required field is missing. Emits a real-time update to the named dispatcher via `emitPermitUpdate()`.
+```json
+{ "id": "clx2...", "driverId": "clu9...", "dispatcherId": "clu8...", "trainId": "clt1...", "status": "PENDING", "...": "..." }
+```
+
+---
+
+### `PATCH /api/route-permit/[id]`
+
+**Why:** The three permit lifecycle actions — a dispatcher approving a permit, and either side removing it from their own view.
+
+**Auth:** session. `approve` and `delete_fszt` require the caller to be the permit's `dispatcherId` (or an admin-panel user); `delete_driver` requires the caller to be the permit's `driverId` (or an admin-panel user).
+
+**Request:** JSON body — `action`: `"approve" | "delete_driver" | "delete_fszt"` (required).
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"approve"}' \
+  "$HSR_URL/api/route-permit/clx2..."
+```
+
+**Response:** `approve` returns the updated permit (status `APPROVED`) and pushes an update to the driver via `emitPermitUpdate()`. `delete_driver`/`delete_fszt` set `deletedByDriver`/`deletedByFszt` (soft delete — the row stays for the other side) and return `{ "ok": true }`. `404` if the permit does not exist, `403` on ownership mismatch, `400` on an unrecognized `action`.
+
+---
+
+### `GET /api/route-permit/stream`
+
+**Why:** Real-time push so a driver's or dispatcher's permit list refreshes without polling — sent as a bare "update" event that tells the client to re-fetch `/api/route-permit`, not the row itself.
+
+**Auth:** session (`requireAuth()`).
+
+**Request:** no parameters. Built with `createSSEResponse()` per the repo's SSE convention.
+
+```bash
+curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/route-permit/stream"
+```
+
+**Response:** SSE stream. Each event is simply the literal data `update`, emitted whenever `emitPermitUpdate(userId)` fires for the connected user (on permit create/approve). The client treats it as "something changed, refetch."
+```
+data: update
+
+```
+
+---
+
+### `GET /api/schedule-request/available`
+
+**Why:** Feeds the booking form with the trains (driver) or stations (dispatcher) still bookable for a given date — filtering out what the caller already booked, what's booked by someone else, what's already assigned to a duty, what requires a locomotive-type role the caller lacks, operator (MAV/GYSEV) mismatches, and — for today only — trains that have already departed.
+
+**Auth:** session (`requireAuth()`). No extra permission flag to *view* availability (booking itself is gated on `POST /api/schedule-request`).
+
+**Request:** query params — `date` (`YYYY-MM-DD`, required), `type` (`"DRIVER" | "DISPATCHER"`, optional — defaults to `DRIVER` behavior when omitted).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/schedule-request/available?date=2026-09-14&type=DRIVER"
+```
+
+**Response:**
+```json
+{
+  "type": "DRIVER",
+  "date": "2026-09-14T00:00:00.000Z",
+  "items": [
+    {
+      "id": "clt1...",
+      "trainNumber": "101",
+      "trainType": "IC",
+      "direction": 0,
+      "locomotiveNum": 1,
+      "locomotiveType": "V63",
+      "hasAC": true,
+      "isAvailable": true
+    }
+  ]
+}
+```
+`400` if `date` is missing or `type` is neither `DRIVER` nor `DISPATCHER`; `500` on unexpected failure.
+
+---
+
+### `GET /api/schedule-request`
+
+**Why:** A member's own submitted schedule requests for a given month, for the dashboard's "my bookings" view.
+
+**Auth:** session.
+
+**Request:** query params — `year` (integer, optional, defaults to current year), `month` (1-12, optional, defaults to current month).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/schedule-request?year=2026&month=9"
+```
+
+**Response:** array of requests.
+```json
+[
+  {
+    "id": "clr1...",
+    "userId": "clu9...",
+    "requestType": "DRIVER",
+    "date": "2026-09-14T00:00:00.000Z",
+    "status": "PENDING",
+    "trainId": "clt1...",
+    "stationId": null,
+    "train": { "id": "clt1...", "trainNumber": "101", "trainType": "IC", "direction": 0 },
+    "station": null
+  }
+]
+```
+
+---
+
+### `POST /api/schedule-request`
+
+**Why:** Submit a driver or dispatcher booking. Driver bookings are constrained to the open Mon–Sun booking window, checked for pair-level conflicts (a return train shares the outbound's slot), operator role, GYSEV eligibility, and — for members with unappealed weekly-duty strikes — capped at 3 bookings/week. Dispatcher bookings validate a station and an HH:MM time range. Same-day submissions are optionally auto-processed (`autoProcessSameDayRequest`) if the admin toggle is on.
+
+**Auth:** session; requires `permissions.canSubmitScheduleRequests()` (`SUBMIT_SCHEDULE_DRIVER` or `SUBMIT_SCHEDULE_DISPATCHER`), otherwise 403.
+
+**Request:** JSON body — `requestType` (`"DRIVER" | "DISPATCHER"`, required), `date` (`YYYY-MM-DD`, required). For `DRIVER`: `trainId` (string, required unless `isNonScheduledFreight`), `isNonScheduledFreight` (boolean, optional), `freightLabel` (string, required if freight, 2–100 chars), `note` (string, optional). For `DISPATCHER`: `stationId` (string, required), `dispatchStartTime`/`dispatchEndTime` (`HH:MM`, required, start < end), `note` (string, optional).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestType":"DRIVER","date":"2026-09-14","trainId":"clt1..."}' \
+  "$HSR_URL/api/schedule-request"
+```
+
+**Response:** `201` with the created (or same-day auto-assigned) request. Errors: `400` invalid type/date/past date/outside booking window/weekly cap reached/train departed/duplicate active request on the pair; `403` operator mismatch (GYSEV/MAV); `404` train or station not found.
+```json
+{ "id": "clr2...", "requestType": "DRIVER", "date": "2026-09-14T00:00:00.000Z", "status": "PENDING", "train": { "...": "..." }, "station": null }
+```
+
+---
+
+### `DELETE /api/schedule-request`
+
+**Why:** Cancel one's own still-pending booking. A driver booking covers the whole train pair, so cancelling one side deletes the sibling pending request for the same pair/day too — otherwise the timetable would keep showing the driver on the half they didn't cancel.
+
+**Auth:** session; ownership enforced (`request.userId !== session.id` → 403).
+
+**Request:** query param — `id` (schedule request id, required).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/schedule-request?id=clr2..."
+```
+
+**Response:** `{ "success": true }`. `400` if `id` missing or the request is not `PENDING`; `404` if not found; `403` if not the owner.
+
+## Member: Training, Exams and Supervision
+
+### `GET /api/exam-slots`
+
+**Why:** Lists the closing-exam time slots a trainee may currently register for or is already registered on, restricted to branches where they are an active trainee (and have finished any required training material).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/exam-slots" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "slot_123",
+    "scheduledAt": "2026-09-14T18:00:00.000Z",
+    "status": "SCHEDULED",
+    "exam": { "title": "Driver Closing Exam", "trainingBranch": "DRIVER" },
+    "_count": { "registrations": 3 },
+    "isRegistered": true,
+    "attended": null,
+    "calendarToken": "a1b2c3..."
+  }
+]
+```
+Empty array `[]` when the member is not an eligible trainee in any branch.
+
+---
+
+### `POST /api/exam-slots/[id]/register`
+
+**Why:** Registers the signed-in trainee onto a scheduled closing-exam slot and emails a confirmation with cancel/calendar links.
+
+**Auth:** session/bearer (`requireAuth`), plus the caller must hold the branch's trainee role and (if the programme has material) have completed it.
+
+**Request:** `id` path param (slot id), no body.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exam-slots/slot_123/register" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "ok": true }`, or `{ "ok": true, "alreadyRegistered": true }` on a repeat call (idempotent, no duplicate email). Errors: `400 { "code": "slotUnavailable" }` (slot missing or not `SCHEDULED`), `403 { "code": "notTrainee" }`, `403 { "code": "materialIncomplete" }`.
+
+---
+
+### `DELETE /api/exam-slots/[id]/register`
+
+**Why:** Lets the signed-in trainee withdraw their own registration from the dashboard (as opposed to the emailed token link).
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** `id` path param (slot id), no body.
+
+```bash
+curl -sS -X DELETE "$HSR_URL/api/exam-slots/slot_123/register" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** `{ "ok": true }` (always succeeds even if no registration existed — `deleteMany`).
+
+---
+
+### `GET /api/exams`
+
+**Why:** Lists the exams (including application forms) the signed-in member may currently take, filtering out ones they've passed, ones they're blacklisted/cooldown-blocked from, and closing exams they aren't registered on an active slot for. Titles/descriptions are machine-translated to the reader's locale.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/exams" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "exam_1",
+    "title": "Driver Closing Exam",
+    "description": "...",
+    "timeLimitMode": "TOTAL",
+    "timeLimitSeconds": 3600,
+    "passingScore": 80,
+    "exitIsViolation": true,
+    "audience": "CLOSING_EXAM",
+    "isApplicationForm": false,
+    "applicationFormType": null,
+    "questionCount": 20,
+    "randomQuestionCount": 15,
+    "hasActiveAttempt": false,
+    "canStart": true,
+    "lastAttempt": null,
+    "translation": { "sourceLang": "hu" }
+  }
+]
+```
+
+---
+
+### `GET /api/exams/eligibility`
+
+**Why:** Tells the member *why* application forms are missing from `/api/exams` (account-wide blacklist/ban, or a per-programme reapplication cooldown) — kept separate so the bare-array `GET /api/exams` contract used by web and mobile is not broken.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/exams/eligibility" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{ "blocked": false, "notices": ["A(z) Driver képzésre 2026. október 1. után jelentkezhetsz újra."] }
+```
+or `{ "blocked": true, "message": "...", "notices": [] }` when account-wide blocked.
+
+---
+
+### `POST /api/exams/[id]/draft`
+
+**Why:** Autosaves the in-progress answer for the current question, used when `exitIsViolation` is false so a page refresh doesn't lose typed work.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body: `questionId` (string, optional), `answer` (any, optional). Requires an `IN_PROGRESS` attempt for the exam.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/draft" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"questionId":"q1","answer":"B"}'
+```
+
+**Response:** `{ "success": true }`. `404 "No active attempt"` if none in progress.
+
+---
+
+### `POST /api/exams/[id]/answer`
+
+**Why:** Submits the answer for the exam's current question, auto-grades multiple-choice, advances the attempt pointer, and returns the next (translated) question.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body: `questionId` (string, required), `answer` (string, required for MC — must be one of the option keys). Server re-checks the per-total or per-question time limit (5s grace).
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/answer" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"questionId":"q1","answer":"B"}'
+```
+
+**Response:**
+```json
+{
+  "completed": false,
+  "currentQuestionIndex": 1,
+  "nextQuestion": { "id": "q2", "type": "MULTIPLE_CHOICE", "questionText": "...", "options": {"A":"...","B":"..."}, "points": 5, "timeLimitSeconds": null }
+}
+```
+`{ "completed": true, "nextQuestion": null }` on the last question. Errors: `404 "No active attempt"`, `400 "Time expired", "timedOut": true, "timedOutType": "TOTAL"`, `400 "Question time expired"`, `400 "Invalid option..."`, `400 "Question is not the current question"`.
+
+---
+
+### `POST /api/exams/[id]/complete`
+
+**Why:** Finalizes an in-progress attempt: scores it (auto-pass/fail if fully MC), fires the closing-exam finalize pipeline (rank grants, result email) when applicable, and logs the completion.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** `id` path param, no body.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/complete" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{ "score": 86.5, "passed": true, "totalPoints": 100, "earnedPoints": 86, "needsReview": false }
+```
+`passed: null` and `needsReview: true` when TEXT/IMAGE answers still need admin grading. `404 "No active attempt"` / `"Exam not found"` on failure.
+
+---
+
+### `POST /api/exams/[id]/start`
+
+**Why:** Starts (or resumes) an exam attempt for the signed-in member: enforces eligibility (role, closing-exam slot registration, application-form blacklist/membership/cooldown), builds the question set (optionally a random subset), and returns the first (translated) question.
+
+**Auth:** session/bearer (`requireAuth`), rate-limited (`apiLimiter`, key `exam-start:<userId>`).
+
+**Request:** `id` path param, no body.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/start" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "attemptId": "attempt_1",
+  "currentQuestionIndex": 0,
+  "totalQuestions": 15,
+  "timeLimitMode": "TOTAL",
+  "timeLimitSeconds": 3600,
+  "exitIsViolation": true,
+  "startedAt": "2026-09-13T18:00:00.000Z",
+  "draftAnswer": null,
+  "question": { "id": "q1", "type": "MULTIPLE_CHOICE", "questionText": "...", "options": {"A":"..."}, "points": 5, "timeLimitSeconds": null }
+}
+```
+Errors: `404 "Exam not available"`, `403 "You are not allowed to take this exam"`, `403 "You are not registered for an active time slot"` (CLOSING_EXAM), `403` blacklist/membership/cooldown messages, `400 "Exam has no questions"`, `400 "You have already passed this exam."`, `400 "Your previous attempt must be archived before retrying."`, `400 "Your previous attempt is still under review."`.
+
+---
+
+### `POST /api/exams/[id]/skip`
+
+**Why:** Skips the current question (records it as unanswered, zero points) and advances to the next.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** `id` path param, no body.
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/skip" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:** Same shape as `answer` — `{ "completed": false, "currentQuestionIndex": 1, "nextQuestion": {...} }` or `{ "completed": true, "nextQuestion": null }`. `404 "No active attempt"`, `400 "No current question"`, `400 "Invalid question"`.
+
+---
+
+### `POST /api/exams/[id]/violation`
+
+**Why:** Records a proctoring violation (e.g. tab switch/focus loss) when `exam.exitIsViolation` is enabled, immediately failing the attempt.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** JSON body: `reason` (string, optional, defaults to `"Left the exam page"`).
+
+```bash
+curl -sS -X POST "$HSR_URL/api/exams/exam_1/violation" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"reason":"Tab switched"}'
+```
+
+**Response:** `{ "success": true }`, or `{ "ignored": true }` if the exam doesn't treat exits as violations. `404 "No active attempt"` if none in progress.
+
+---
+
+### `GET /api/instructor/me`
+
+**Why:** An instructor's own weekly quota progress (supervision credits/sessions), derived read-only from the supervisions they ran.
+
+**Auth:** session/bearer (`requireAuth`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS "$HSR_URL/api/instructor/me" -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "isInstructor": true,
+  "weekStart": "2026-09-07T00:00:00.000Z",
+  "weekEnd": "2026-09-13T23:59:59.999Z",
+  "row": { "userId": "...", "credits": 3, "sessions": 2, "..." : "..." },
+  "rules": { "requiredCredits": 4, "requiredSessions": 2 }
+}
+```
+`{ "isInstructor": false }` for a non-instructor or a leadership-tier holder excluded from the list.
+
+---
+
+### `GET /api/supervisor-request`
+
+**Why:** Lists supervisor requests. Instructors/admins (`canManageSupervisionRequests()` or `role === "ADMIN"`) see every PENDING request across all trainees to claim from the shared pool; an ordinary trainee sees only their own requests, enriched with the linked duty's `startTime` and every `SupervisionFault` marked on those requests (including warnings) so the trainee sees exactly what they were briefed on.
+
+**Auth:** Session (`requireAuth()`). Viewing everyone's queue additionally needs `canManageSupervisionRequests()` or `role === "ADMIN"`; anyone who can neither manage nor submit requests gets 403.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request"
+```
+
+**Response (own requests):**
+```json
+[
+  {
+    "id": "clx...",
+    "userId": "clu...",
+    "track": "DRIVER",
+    "status": "PENDING",
+    "availableFrom": "2026-09-14T06:00:00.000Z",
+    "availableTo": null,
+    "note": null,
+    "dutyId": null,
+    "duty": null,
+    "faults": []
+  }
+]
+```
+**Response (manager view):** array of `SupervisorRequest` rows with status `"PENDING"` and an included `user` (`id`, `displayName`, `name`, `discordRole`). Errors: `403` not permitted, `500` on failure.
+
+---
+
+### `PUT /api/supervisor-request`
+
+**Why:** Lets an instructor/admin resolve a pending request without starting a session (e.g. cancel or mark completed some other way).
+
+**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403.
+
+**Request:** JSON body — `requestId` (string, required), `status` (`"COMPLETED" | "CANCELLED"`, required), `responseNote` (string, optional).
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clx...","status":"CANCELLED","responseNote":"Trainee unavailable"}' \
+  "$HSR_URL/api/supervisor-request"
+```
+
+**Response:** the updated `SupervisorRequest` row. Errors: `400` missing/invalid fields, `403` not permitted, `500` on failure.
+
+---
+
+### `DELETE /api/supervisor-request`
+
+**Why:** Removes a request — a trainee may withdraw their own still-PENDING request, and a manager may delete any request; deleting an IN_PROGRESS one also closes its linked active duty first.
+
+**Auth:** Session. Own PENDING request: the owner; any request: `canManageSupervisionRequests()` or `role === "ADMIN"`.
+
+**Request:** Query param `id` (string, required — the request id).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request?id=clx..."
+```
+
+**Response:** `{ "success": true }`. Errors: `400` missing id, `403` not the owner and not a manager, `404` not found, `500` on failure.
+
+---
+
+### `POST /api/supervisor-request`
+
+**Why:** A trainee opens a supervision request into the shared instructor pool (no named instructor). Filed under the caller's own `supervisionTrack()`, falling back to `"DRIVER"` for an admin testing the flow (admins hold no trainee branch).
+
+**Auth:** Session; requires `permissions.canSubmitSupervisionRequest()` (the `SUBMIT_SUPERVISION` flag), else 403. The resolved track must also be open in `getTrackConfig()`, else 403.
+
+**Request:** JSON body — `availableFrom` (string, `YYYY-MM-DDTHH:mm[:ss]`, Budapest local time, required), `availableTo` (same format, optional), `note` (string, optional). Refused with 400 if the caller already has a PENDING request.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"availableFrom":"2026-09-14T16:00:00","note":"Free after 4pm"}' \
+  "$HSR_URL/api/supervisor-request"
+```
+
+**Response (201):** the created `SupervisorRequest` row. Errors: `400` missing/invalid dates or already has a pending request, `403` no `SUBMIT_SUPERVISION` or branch closed, `500` on failure.
+
+---
+
+### `GET /api/training`
+
+**Why:** The trainee's own training-material page: modules/sections/blocks, progress and remaining deadline/hour budget for their (or a chosen) programme. Per the Automatic Content Translation section, block text is stripped out unless a live `TrainingAccessSession` is open, so browsing the navigation shell never leaks the course, and the returned content is machine-translated into the reader's locale (never re-translating text already in that language).
+
+**Auth:** Session (`requireAuth()`). The resolved branch must be one this member is actually enrolled/eligible for (`resolveBranch()`), else 403.
+
+**Request:** Query param `branch` (string, optional — a programme key; falls back to the caller's own trainee branch if omitted/invalid). Reader locale resolved via cookie/`?locale=`/`User.locale` per the translation section.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/training?branch=DRIVER&locale=en"
+```
+
+**Response:**
+```json
+{
+  "branch": "DRIVER",
+  "branchName": "Train Driver",
+  "availableBranches": ["DRIVER"],
+  "programs": [{ "key": "DRIVER", "name": "Train Driver" }],
+  "modules": [
+    {
+      "id": "clm...",
+      "branch": "DRIVER",
+      "sections": [{ "id": "cls...", "blocks": [] }]
+    }
+  ],
+  "translation": { "sourceLang": "hu" },
+  "progress": { "completedSectionIds": ["cls..."], "isCompleted": false, "totalMinutesUsed": 12, "rulesAccepted": true, "allSectionsCompleted": false },
+  "status": { "daysLeft": 18, "minutesLeft": 2988, "isDeadlinePassed": false, "isHoursExhausted": false, "isAccessAllowed": true },
+  "activeSession": null
+}
+```
+`blocks` are populated only while `activeSession` is non-null; `translation` is `null` when the content already matched the reader's language. Error: `403` not an active trainee for any branch.
+
+---
+
+### `GET /api/type-trainings`
+
+**Why:** Lists open locomotive-type training sessions a driver may sign up for — locomotive-type knowledge is a driving concern, so it is gated on the drive permission rather than open to everyone.
+
+**Auth:** Session; requires `permissions.canDrive()` (`CAN_DRIVE`), else the `requirePermission` 403.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/type-trainings"
+```
+
+**Response:**
+```json
+[
+  { "id": "clt...", "title": "V63 type training", "scheduledAt": "2026-09-20T17:00:00.000Z", "registrantCount": 4, "isRegistered": false }
+]
+```
+
+---
+
+### `GET /api/supervision/my-summary`
+
+**Why:** The trainee's own recurring-fault breakdown, grouped by fault code across every `TRAINEE`-kind supervision. Deliberately takes no `userId` — per the Trainee Supervision Summary section, reading somebody else's marked faults is the Head of Education's cross-trainee report behind `MANAGE_INSTRUCTORS`, and an id parameter here would be a second, ungated path to the same data.
+
+**Auth:** Session (`requireAuth()`). No further permission — always the caller's own supervisions.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervision/my-summary"
+```
+
+**Response:** built by `buildTraineeSupervisionSummary()` — an object grouping faults by `code` with counts, whether each is "recurring" (marked across multiple sessions) or "improved" (absent from the most recent third of closed sessions), and warning-only occurrences. Renders as nothing on the dashboard when there is no closed supervision at all. Error: `500` on failure to build the summary.
+
+---
+
+### `GET /api/supervision/rules`
+
+**Why:** Serves the trainee the same fault catalogue and thresholds the supervisor's sheet marks from — a printed hand-out would go stale the moment the Head of Education re-prices an item, per the Supervision Scoring section.
+
+**Auth:** Session (`requireAuth()`). No extra permission — read-only, active entries only.
+
+**Request:** Query param `track` (`"DRIVER" | "DISPATCHER"`, optional — otherwise both tracks' fault types are returned).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervision/rules?track=DRIVER"
+```
+
+**Response:**
+```json
+{
+  "faultTypes": [{ "id": "clf...", "code": "SIGNAL_MISS", "label": "Missed a signal", "kind": "INSTANT_FAIL", "points": 0, "track": "DRIVER" }],
+  "rules": { "enabled": true, "failPointThreshold": 6, "requiredLaps": 2, "pointsFromLap": 2, "instantFailFirstLapWarning": true }
+}
+```
+
+---
+
+### `POST /api/supervisor-request/start`
+
+**Why:** An instructor claims a PENDING request and opens the trainee's supervision duty. The duty's type is derived from the programme's own trainee team (`programDutyType()`) rather than being hardcoded to `TRAIN_DRIVER`, so a dispatcher trainee's supervision correctly opens on the dispatcher team.
+
+**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403.
+
+**Request:** JSON body — `requestId` (string, required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clx..."}' \
+  "$HSR_URL/api/supervisor-request/start"
+```
+
+**Response:**
+```json
+{ "success": true, "dutyId": "cld...", "dutyType": "TRAIN_DRIVER", "trackNumber": "SUP-482913" }
+```
+Errors: `400` missing requestId or request not PENDING, `403` not permitted, `404` request not found, `409` trainee already has an active duty, `500` on failure.
+
+---
+
+### `GET /api/supervisor-request/eligibility`
+
+**Why:** A small boolean-shaped endpoint split out of `GET /api/supervisor-request`, which answers with a bare array both web and mobile clients index into directly — this tells the dashboard whether the "request supervision" button should even be shown, and whether the branch itself is currently open.
+
+**Auth:** Session (`requireAuth()`).
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request/eligibility"
+```
+
+**Response:**
+```json
+{ "track": "DRIVER", "eligible": true, "trackOpen": true, "canSubmit": true, "tracks": { "DRIVER": true, "DISPATCHER": true } }
+```
+
+---
+
+### `POST /api/supervisor-request/end`
+
+**Why:** Closes a running supervision. With the rulebook enabled, the outcome is derived from the marked `SupervisionFault` rows rather than declared by the closer — the `passed` field sent by the instructor is a confirmation of the sheet, and disagreeing with it requires `MANAGE_INSTRUCTORS` plus a written `responseNote` (per the Supervision Scoring section). A pass that hits the programme's `requiredSupervisions` count promotes the trainee (Discord role swap + email); an `OBSERVATION` session is always closed as a report, never pass/fail.
+
+**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403. Overriding the sheet's own verdict additionally needs `canManageInstructors()`.
+
+**Request:** JSON body — `requestId` (string, required), `passed` (boolean, required unless the session `kind` is `OBSERVATION`), `responseNote` (string, required only when overriding the sheet's derived verdict).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clx...","passed":true}' \
+  "$HSR_URL/api/supervisor-request/end"
+```
+
+**Response:**
+```json
+{ "success": true, "outcomeRule": null, "outcomeReason": null, "faultPoints": 0 }
+```
+Errors: `400` missing requestId/passed, request not IN_PROGRESS, undocumented laps, or a disagreement with the sheet without the required override permission/reason; `403` not permitted; `404` not found; `500` on failure.
+
+---
+
+### `GET /api/supervisor-request/evaluation`
+
+**Why:** The live evaluation sheet for one running supervision — the fault catalogue to mark from plus everything already marked and what the rulebook currently makes of it (pass/fail projection, undocumented laps).
+
+**Auth:** Session; requires `canManageSupervisionRequests()`.
+
+**Request:** Query param `requestId` (string, required).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request/evaluation?requestId=clx..."
+```
+
+**Response:**
+```json
+{
+  "state": { "requestId": "clx...", "track": "DRIVER", "faults": [], "undocumentedLaps": [], "outcome": { "failed": false, "points": 0, "rule": null, "detail": null, "threshold": 6 } },
+  "faultTypes": [{ "id": "clf...", "code": "SIGNAL_MISS", "label": "Missed a signal" }]
+}
+```
+Errors: `400` missing requestId, `403` not permitted, `404` supervision not found.
+
+---
+
+### `GET /api/training/section`
+
+**Why:** Fetches one section's blocks, translated into the reader's language, for the trainee currently viewing it. `/api/training` deliberately never translates block text live for the whole course (it would produce a course half in each language before the cache warms); this route handles the one section actually being read, which is small enough to finish inside its own (longer, 25s default) translation budget. Same access-session gate as `/api/training`, so this cannot be used to pull the whole course section by section without an open session.
+
+**Auth:** Session (`requireAuth()`). The section's branch must resolve to one the caller may access (`resolveBranch()`), and a live `TrainingAccessSession` for that branch must be open, else 403.
+
+**Request:** Query param `id` (string, required — the section id). `?locale=` supported via `requestLocale()`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/training/section?id=cls1234567890&locale=en"
+```
+
+**Response:**
+```json
+{ "sectionId": "cls1234567890", "sourceLang": "hu", "blocks": [{ "id": "clb...", "text": "Translated section text..." }] }
+```
+`sourceLang` is `null` when no translation was needed. Errors: `400` missing id, `403` wrong branch / no active session, `404` section not found.
+
+---
+
+### `POST /api/training/progress`
+
+**Why:** Marks one section as completed for the caller's own progress in a branch, rolling up whether the whole module is done (a completion-gate section, or every section in the branch completed).
+
+**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
+
+**Request:** JSON body — `sectionId` (string, required), `branch` (string, optional — resolved/validated against the caller's programmes).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"sectionId":"cls1234567890","branch":"DRIVER"}' \
+  "$HSR_URL/api/training/progress"
+```
+
+**Response:** `{ "ok": true, "isCompleted": false, "allSectionsCompleted": false }` (or `{ "ok": true, "alreadyCompleted": true }` if already marked). Errors: `400` missing sectionId or section belongs to another branch, `403` branch not accessible, `404` section not found.
+
+---
+
+### `POST /api/training/access`
+
+**Why:** Opens a timed (45-minute) training-material access session, which is what unlocks block text from `GET /api/training`/`/api/training/section`. Also enforces the programme's day/hour limits and closes any other open session first (a member can only sit in front of one material at a time), crediting the elapsed minutes to that other branch's progress before starting the new one.
+
+**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
+
+**Request:** JSON body — `branch` (string, optional — resolved against the caller's programmes).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"branch":"DRIVER"}' \
+  "$HSR_URL/api/training/access"
+```
+
+**Response:** `{ "token": "b3f1...", "expiresAt": "2026-09-13T09:45:00.000Z" }`. Errors: `403` branch not accessible, training deadline expired, or hour budget exhausted.
+
+---
+
+### `POST /api/training/heartbeat`
+
+**Why:** Confirms an access-session token is still valid, so the client's training-material page knows whether to keep the material unlocked or force a re-open.
+
+**Auth:** Session (`requireAuth()`). Caller must have at least one accessible branch.
+
+**Request:** JSON body — `token` (string, required — the session token from `/api/training/access`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"token":"b3f1..."}' \
+  "$HSR_URL/api/training/heartbeat"
+```
+
+**Response:** `{ "valid": true, "expiresAt": "2026-09-13T09:45:00.000Z" }`, or `401 { "valid": false }` if the token is missing/expired/not the caller's. Error: `403` if no branch is accessible at all.
+
+---
+
+### `POST /api/training/rules-accept`
+
+**Why:** Records that the trainee has acknowledged the training rules for a branch, gating further progress the same way the material's other checkpoints do.
+
+**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
+
+**Request:** JSON body — `branch` (string, optional — resolved against the caller's programmes).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"branch":"DRIVER"}' \
+  "$HSR_URL/api/training/rules-accept"
+```
+
+**Response:** `{ "ok": true }`. Error: `403` branch not accessible.
+
+---
+
+### `POST /api/training/access/end`
+
+**Why:** Closes a training access session and writes back the minutes consumed against the trainee's hour budget. Deliberately checks only token ownership, not the trainee's current role — a trainee who loses the role mid-session must still be able to close it, or the consumed minutes are never credited.
+
+**Auth:** Session (`requireAuth()`) — ownership of the session token, no permission/branch gate.
+
+**Request:** JSON body — `token` (string, required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"token":"b3f1..."}' \
+  "$HSR_URL/api/training/access/end"
+```
+
+**Response:** `{ "ok": true, "minutesConsumed": 12 }`, or `{ "ok": true }` (idempotent) if no matching open session exists.
+
+---
+
+### `POST /api/supervisor-request/evaluation/lap`
+
+**Why:** Documents one completed lap of a running supervision — required before the session can be closed, per the Supervision Scoring section's "documentation is a gate, not a report" rule.
+
+**Auth:** Session; requires `canManageSupervisionRequests()`.
+
+**Request:** JSON body — `requestId` (string, required), `index` (number, required — the lap index), `note` (string, optional).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clx...","index":0,"note":"Clean lap"}' \
+  "$HSR_URL/api/supervisor-request/evaluation/lap"
+```
+
+**Response:** `{ "state": { ...evaluation state... } }`. Errors: `400` missing requestId/index or the underlying rule rejects it, `403` not permitted.
+
+---
+
+### `DELETE /api/supervisor-request/evaluation/lap`
+
+**Why:** Undoes a documented lap.
+
+**Auth:** Session; requires `canManageSupervisionRequests()`.
+
+**Request:** Query params `requestId` (string, required), `index` (number, required).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request/evaluation/lap?requestId=clx...&index=0"
+```
+
+**Response:** `{ "state": { ... } }`. Errors: `400` missing params or rejected, `403` not permitted.
+
+---
+
+### `POST /api/supervisor-request/evaluation/fault`
+
+**Why:** Marks a fault against the trainee during a running supervision, from the shared catalogue.
+
+**Auth:** Session; requires `canManageSupervisionRequests()`.
+
+**Request:** JSON body — `requestId` (string, required), `faultTypeId` (string, required), `lap` (number, required), `points` (number, optional — override the catalogue's own point cost), `note` (string, optional).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clx...","faultTypeId":"clf...","lap":0}' \
+  "$HSR_URL/api/supervisor-request/evaluation/fault"
+```
+
+**Response:** `{ "state": { ... } }`. Errors: `400` missing fields or rejected, `403` not permitted.
+
+---
+
+### `DELETE /api/supervisor-request/evaluation/fault`
+
+**Why:** Undoes a marked fault — a mis-click during a live supervision is not a verdict.
+
+**Auth:** Session; requires `canManageSupervisionRequests()`.
+
+**Request:** Query param `id` (string, required — the fault id).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/supervisor-request/evaluation/fault?id=clfault..."
+```
+
+**Response:** `{ "state": { ... } }`. Errors: `400` missing id or rejected, `403` not permitted.
+
+---
+
+### `POST /api/type-trainings/[id]/register`
+
+**Why:** Signs the caller up for a scheduled locomotive-type training. Upserted so a repeat click is harmless.
+
+**Auth:** Session; requires `permissions.canDrive()`.
+
+**Request:** Path param `id` (string, required — the training id). No body.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/type-trainings/clt1234567890/register"
+```
+
+**Response:** `{ "ok": true }`. Error: `400` training not found or not `SCHEDULED`.
+
+---
+
+### `DELETE /api/type-trainings/[id]/register`
+
+**Why:** Withdraws the caller's own registration from a type training.
+
+**Auth:** Session (`requireAuth()`) — no `CAN_DRIVE` gate on withdrawal, just ownership by construction (deletes only the caller's own registration row).
+
+**Request:** Path param `id` (string, required).
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/type-trainings/clt1234567890/register"
+```
+
+**Response:** `{ "ok": true }` regardless of whether a registration existed.
+
+---
+
+### `POST /api/supervisor-request/claim`
+
+**Why:** An instructor takes a trainee's pending supervision request. The trainee is told who their supervisor is (email + Discord DM + push), and the claim lasts until `claimExpiresAt` — if no session is started by then, the request goes back to the pool.
+
+**Request:** JSON body `{ "requestId": "…" }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clr123"}' "$HSR_URL/api/supervisor-request/claim"
+```
+
+**Response:** `{ "success": true, "claimExpiresAt": "2026-10-18T12:00:00.000Z" }`. Errors carry a `code`: `403 DISABLED` (claiming switched off), `404 NOT_FOUND`, `409 NOT_PENDING | ALREADY_CLAIMED | LIMIT_REACHED` (the instructor already holds the maximum number of claims).
+
+---
+
+### `DELETE /api/supervisor-request/claim`
+
+**Why:** Hand a claimed request back to the pool — your own, or (with `MANAGE_INSTRUCTORS` / `ADMIN`) somebody else's. The trainee is told, and a removed instructor gets a push.
+
+**Request:** JSON body `{ "requestId": "…", "reason": "at least 5 characters" }`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clr123","reason":"Nem érek rá a héten"}' "$HSR_URL/api/supervisor-request/claim"
+```
+
+**Response:** `{ "success": true }`. Errors: `400` missing id or reason, `403 NOT_YOURS`, `404 NOT_FOUND`, `409 NOT_CLAIMED`.
+
+---
+
+### `POST /api/supervisor-request/pause`
+
+**Why:** Pause a running supervision session (for example the trainee disconnected). The trainee's duty is ended and the elapsed time is kept for the resume.
+
+**Request:** JSON body `{ "requestId": "…" }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clr123"}' "$HSR_URL/api/supervisor-request/pause"
+```
+
+**Response:** `{ "success": true, "elapsedSeconds": 1260 }`. Errors come from the pause rules (e.g. not running) with their own status.
+
+---
+
+### `POST /api/supervisor-request/resume`
+
+**Why:** Continue a paused supervision session; a new duty is started for the trainee.
+
+**Request:** JSON body `{ "requestId": "…" }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"requestId":"clr123"}' "$HSR_URL/api/supervisor-request/resume"
+```
+
+**Response:** `{ "success": true, "dutyId": "…", "trackNumber": "5", "elapsedSeconds": 1260 }`.
+
+## Member: Forum
+
+Writing to the forum needs a session (cookie or bearer) **and** a fully linked account (Discord + Roblox): a half-linked account gets `403 { "error": "forumAccountIncomplete" }`. Every interaction is rate limited per member (`429` when exceeded). Post objects are the `ForumPostDTO` described in the [Public API](public-api.md#the-post-object).
+
+### `POST /api/forum/posts`
+
+**Why:** Publish a post, a reply (`parentId`) or a quote (`quotedPostId`).
+
+**Auth:** Session or bearer, fully linked account. Posting as the official HSR account (`asOfficial` / `officialType`) also needs the forum-official permission (`403 forumOfficialNotAllowed` otherwise). Replies and posts have separate rate limits.
+
+**Request:** JSON body — `body` (string, required; length limit depends on the member's tier, see `GET /api/forum/quota`), `mediaIds` (up to 10 confirmed upload ids), `parentId`, `quotedPostId`, `topicIds` (up to 5), `asOfficial` (boolean), `officialType` (`UPDATE` | `DEVELOPMENT` | `NOTICE` | `EVENT` | `MAINTENANCE`, top-level only).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"body":"Holnap új menetrend #gysev","topicIds":[]}' \
+  "$HSR_URL/api/forum/posts"
+```
+
+**Response:** `201 { "post": ForumPostDTO }`. Errors: `400 forumPostEmpty | forumBodyTooLong | forumTooManyFiles | forumMediaInvalid`, `403 forumAccountIncomplete | forumOfficialNotAllowed | forumQuotaExceeded`, `404 forumParentMissing | forumQuotedMissing`. A new top-level post is pushed to everyone on `GET /api/forum/live`.
+
+---
+
+### `PATCH /api/forum/posts/[id]`
+
+**Why:** Edit the body of your own post. Editing is a supporter perk (and allowed on official posts for those who may post as HSR).
+
+**Auth:** Session or bearer; must be the author with edit rights.
+
+**Request:** JSON body `{ "body": "…" }`.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"body":"Javított szöveg"}' "$HSR_URL/api/forum/posts/clp1234567890"
+```
+
+**Response:** `{ "post": ForumPostDTO }`. `403 forumEditNotAllowed`, `404 forumPostMissing`.
+
+---
+
+### `DELETE /api/forum/posts/[id]`
+
+**Why:** Delete your own post, or — as a forum moderator — anyone's. The text and files are removed for good; a post with replies stays as a tombstone.
+
+**Auth:** Session or bearer; the author or a forum moderator. A moderator's deletion is written to the activity log.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/posts/clp1234567890"
+```
+
+**Response:** `{ "ok": true }`. `403 forumDeleteNotAllowed`, `404 forumPostMissing`.
+
+---
+
+### `POST /api/forum/posts/[id]/like`
+
+**Why:** Toggle a like.
+
+**Auth:** Session or bearer, fully linked account. Rate limited.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/posts/clp1234567890/like"
+```
+
+**Response:** `{ "active": true, "count": 13 }` — `active` is the new state, `count` the new like count. `404 forumPostMissing`.
+
+---
+
+### `POST /api/forum/posts/[id]/repost`
+
+**Why:** Toggle a repost (reshare to your followers).
+
+**Auth:** Session or bearer, fully linked account. Rate limited.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/posts/clp1234567890/repost"
+```
+
+**Response:** `{ "active": true, "count": 2 }`. `400 forumRepostOwnPost` on your own post.
+
+---
+
+### `POST /api/forum/posts/[id]/report`
+
+**Why:** Report a post to the moderators. Reporting again updates your earlier report instead of adding a second one.
+
+**Auth:** Session or bearer, fully linked account. Rate limited.
+
+**Request:** JSON body — `reason` (`SPAM` | `HARASSMENT` | `NSFW` | `MISINFORMATION` | `OFF_TOPIC` | `OTHER`; anything else becomes `OTHER`), `note` (optional, max 1000 characters).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"reason":"SPAM","note":"Reklám"}' "$HSR_URL/api/forum/posts/clp1234567890/report"
+```
+
+**Response:** `{ "ok": true }`. `400 forumReportOwnPost`, `404 forumPostMissing`.
+
+---
+
+### `POST /api/forum/follow/[userId]`
+
+**Why:** Toggle following a member.
+
+**Auth:** Session or bearer, fully linked account. Rate limited.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/follow/clu1234567890"
+```
+
+**Response:** `{ "following": true }` (or `false` after unfollowing). `400 forumFollowSelf`, `404 forumUserMissing`. A new follow raises a `FOLLOW` notification for the followed member.
+
+---
+
+### `GET /api/forum/notifications`
+
+**Why:** The notification bell: likes, replies, mentions, reposts, quotes and follows, newest first.
+
+**Auth:** Session or bearer.
+
+**Request:** Query `cursor` (ISO time of the last item) for the next 30.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/notifications"
+```
+
+**Response:**
+```json
+{
+  "notifications": [{ "id": "...", "type": "REPLY", "actor": { "id": "...", "displayName": "..." }, "postId": "clp...", "excerpt": "First line of the post…", "read": false, "createdAt": "2026-10-16T08:00:00.000Z" }],
+  "unread": 3,
+  "nextCursor": null
+}
+```
+
+---
+
+### `POST /api/forum/notifications`
+
+**Why:** Mark notifications read.
+
+**Auth:** Session or bearer.
+
+**Request:** JSON body `{ "ids": ["…"] }`; an empty or missing `ids` marks everything read.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" -d '{}' \
+  "$HSR_URL/api/forum/notifications"
+```
+
+**Response:** `{ "marked": 3 }`.
+
+---
+
+### `POST /api/forum/feed/seen`
+
+**Why:** Tells the ranking which posts were on the reader's screen, so the `for-you` feed stops repeating them. The browser batches ids every few seconds.
+
+**Auth:** Session optional — without one the call is a no-op (`204`). Rate limited.
+
+**Request:** JSON body `{ "postIds": ["…"] }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"postIds":["clp1","clp2"]}' "$HSR_URL/api/forum/feed/seen"
+```
+
+**Response:** `{ "recorded": 2 }`, or `204` with no body when there was nothing to record.
+
+---
+
+### `GET /api/forum/quota`
+
+**Why:** The caller's own limits, for the composer's counters: body length, files per post, bytes per file and per post, whether they may edit or post as HSR.
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/quota"
+```
+
+**Response:**
+```json
+{ "tier": "free", "maxBodyLength": 500, "maxFilesPerPost": 5, "maxFileBytes": 10485760, "maxBytesPerPost": 52428800, "draftBytes": 0, "canEditPosts": false, "canPostOfficial": false, "officialMaxBodyLength": 2000 }
+```
+The free tier allows 500 characters and 5 files of up to 10 MB; supporters get 2000 characters, files up to 1 GB (1 GB per post) and post editing.
+
+---
+
+### `GET /api/forum/streak`
+
+**Why:** The caller's run of consecutive days active on the forum.
+
+**Auth:** Session or bearer.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/streak"
+```
+
+**Response:** `{ "streak": { "current": 5, "longest": 12, "activeToday": true } }`.
+
+---
+
+### `POST /api/forum/media/presign`
+
+**Why:** Step 1 of uploading an image or video: reserves an upload and returns signed URLs to PUT the file straight to storage (Cloudflare R2), so large files never pass through the web server.
+
+**Auth:** Session or bearer, fully linked account. Rate limited; a member may only have a few unfinished uploads at once (`429 forumTooManyPending`).
+
+**Request:** JSON body `{ "mime": "image/webp", "bytes": 482113 }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"mime":"image/webp","bytes":482113}' "$HSR_URL/api/forum/media/presign"
+```
+
+**Response:**
+```json
+{ "mediaId": "clm...", "mode": "single", "uploadUrl": "https://...r2.cloudflarestorage.com/...", "requiredHeaders": { "Content-Type": "image/webp" }, "expiresInSeconds": 900 }
+```
+For a large video `mode` is `multipart`: PUT each part to `partUrls[i]` (every part but the last is `partSize` bytes) and keep each response's `ETag`. Errors: `400 forumMediaType | forumMediaTooLarge`, `403 forumQuotaExceeded`, `503 forumStorageUnavailable`.
+
+---
+
+### `POST /api/forum/media/[id]/confirm`
+
+**Why:** Step 2 of an upload: tells the server the file is in storage, so it can check it and mark it ready to attach to a post.
+
+**Auth:** Session or bearer; must be the uploader.
+
+**Request:** JSON body — `width`, `height`, `durationMs` (optional, as measured by the client), `parts` (`[{ "partNumber": 1, "etag": "…" }]`, multipart uploads only).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"width":1280,"height":720}' "$HSR_URL/api/forum/media/clm1234567890/confirm"
+```
+
+**Response:** `{ "media": { "id", "url", "mime", "width", "height", "durationMs", "video" } }`. Errors: `400 forumMediaMismatch` (the stored file does not match what was announced), `404 forumMediaNotFound`.
+
+---
+
+### `DELETE /api/forum/media/[id]`
+
+**Why:** Discard an upload that has not been attached to a post yet (the composer's ✕ button).
+
+**Auth:** Session or bearer; must be the uploader, and the media must not be on a post.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/forum/media/clm1234567890"
+```
+
+**Response:** `{ "ok": true }`. `404 forumMediaNotFound`.
+
+## Member: Tickets, Documents and Shop
+
+### `GET /api/documents`
+
+**Why:** A member's own drafted/submitted signed documents (signers use the admin surface for everyone else's).
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS` (`canAccessDocuments()`, via `requireDocumentsSurface()`). 403 without it.
+
+**Request:** No parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "doc_1",
+    "title": "Kérelem",
+    "status": "DRAFT",
+    "verifyCode": "AB12CD",
+    "requiredSignatures": 1,
+    "updatedAt": "2026-09-13T09:00:00.000Z"
+  }
+]
+```
+
+---
+
+### `POST /api/documents`
+
+**Why:** Creates a new draft document (the base of the "sign documents" flow), with a stable verify code assigned up front so it survives a reject/resubmit cycle.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`.
+
+**Request:** JSON body: `title` (string, required, trimmed non-empty, ≤ `MAX_TITLE_LENGTH`), `body` (string, optional, ≤ `MAX_BODY_LENGTH`), `requiredSignatures` (number, optional — omitted means 1, must parse within 1..`MAX_REQUIRED_SIGNATURES` via `parseRequiredSignatures`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Kérelem","body":"...","requiredSignatures":2}' \
+  "$HSR_URL/api/documents"
+```
+
+**Response:**
+
+```json
+{
+  "id": "doc_1",
+  "title": "Kérelem",
+  "status": "DRAFT",
+  "verifyCode": "AB12CD",
+  "requiredSignatures": 2
+}
+```
+Errors: 400 `{"error":"A cím megadása kötelező"}`, `{"error":"A cím legfeljebb N karakter lehet"}`, `{"error":"A dokumentum törzse túl hosszú"}`, `{"error":"Az aláírók száma 1 és N között lehet"}`.
+
+---
+
+### `GET /api/documents/[id]`
+
+**Why:** Fetches one signed document — the author sees their own, a signer (`SIGN_DOCUMENTS`) sees any.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS` for the surface, and either authorship or `SIGN_DOCUMENTS`. A document the caller may not see returns 404, not 403 (so document ids cannot be probed).
+
+**Request:** Path param `id`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1"
+```
+
+**Response:** the serialized document, including attachments and signatures. 404 `{"error":"A dokumentum nem található"}` if not found or not accessible.
+
+---
+
+### `PATCH /api/documents/[id]`
+
+**Why:** Lets the author edit a document while it is still a DRAFT or a REJECTED one — anything already submitted or signed is frozen, since an editable signature would prove nothing.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and must be the author.
+
+**Request:** JSON body (all optional, at least one required): `title` (string, non-empty, ≤ `MAX_TITLE_LENGTH`), `body` (string, ≤ `MAX_BODY_LENGTH`), `requiredSignatures` (number, 1..`MAX_REQUIRED_SIGNATURES`).
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Új cím"}' \
+  "$HSR_URL/api/documents/doc_1"
+```
+
+**Response:** the updated serialized document. Errors: 403 `{"error":"Csak a készítő szerkesztheti"}`; 409 `{"error":"Csak piszkozat vagy elutasított dokumentum szerkeszthető"}`; 400 `{"error":"A cím nem lehet üres"}` / length errors / `{"error":"Nincs módosítandó mező"}`.
+
+---
+
+### `DELETE /api/documents/[id]`
+
+**Why:** Deletes a draft the author no longer wants — never a submitted or signed one, which belongs to the review queue or is a permanent record.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and must be the author.
+
+**Request:** Path param `id`. No body.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1"
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+Errors: 403 `{"error":"Csak a készítő törölheti"}`; 409 `{"error":"Csak piszkozat törölhető"}`. Deletes stored attachment objects from R2 first.
+
+---
+
+### `POST /api/documents/[id]/submit`
+
+**Why:** Hands a DRAFT or fixed-up REJECTED document to the signers — the transition to `PENDING` is claimed atomically (`updateMany` on the status) so a double submit cannot mail every signer twice, and every current `SIGN_DOCUMENTS` holder is notified by push and email in their own locale.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author.
+
+**Request:** Path param `id`. No body. Document body must be non-empty.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1/submit"
+```
+
+**Response:** the updated serialized document (`status: "PENDING"`, `submittedAt` set, prior rejection fields cleared, signatures reset to zero). Errors: 403 `{"error":"Csak a készítő küldheti be"}`; 409 `{"error":"A dokumentum már be van küldve"}` (also returned if the atomic claim loses a race); 400 `{"error":"Üres dokumentum nem küldhető be"}`.
+
+---
+
+### `GET /api/documents/[id]/pdf`
+
+**Why:** Streams the signed PDF for a document through the app (rather than exposing a direct R2 URL) so only the author or a signer can retrieve it.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and author-or-signer via `requireDocument()`. Document must already carry a `pdfKey` (i.e. be signed).
+
+**Request:** Path param `id`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" -o document.pdf "$HSR_URL/api/documents/doc_1/pdf"
+```
+
+**Response:** raw PDF bytes with `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="<verifyCode>.pdf"`, `Cache-Control: private, max-age=3600`. 409 `{"error":"A dokumentum még nincs aláírva"}` if not yet signed.
+
+---
+
+### `POST /api/documents/[id]/attachments`
+
+**Why:** Attaches an image or PDF (up to `MAX_ATTACHMENTS`) to a document that is still editable, to be rendered into the final signed document.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author, document must be DRAFT or REJECTED, and Cloudflare R2 must be configured (`isR2Configured()`).
+
+**Request:** `multipart/form-data` with field `file` — must be PNG/JPEG (`ALLOWED_IMAGE_TYPES`) or PDF (`ALLOWED_PDF_TYPES`), ≤ `MAX_ATTACHMENT_BYTES` (15 MB).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -F "file=@scan.pdf;type=application/pdf" \
+  "$HSR_URL/api/documents/doc_1/attachments"
+```
+
+**Response:**
+
+```json
+{
+  "id": "att_1",
+  "kind": "PDF",
+  "url": "https://s3.hsrgames.hu/documents/doc_1/scan.pdf",
+  "filename": "scan.pdf",
+  "size": 20480,
+  "contentType": "application/pdf",
+  "sortOrder": 0
+}
+```
+Errors: 403 `{"error":"Csak a készítő csatolhat"}`; 409 `{"error":"Beküldött dokumentumhoz nem csatolható melléklet"}`; 400 `{"error":"Legfeljebb N melléklet csatolható"}`, `{"error":"Nincs fájl"}`, `{"error":"Csak PNG, JPEG vagy PDF csatolható"}`, `{"error":"A fájl túl nagy (max. 15 MB)"}`; 500 `{"error":"A fájltárolás nincs beállítva"}`.
+
+---
+
+### `DELETE /api/documents/[id]/attachments/[attachmentId]`
+
+**Why:** Removes an attachment from a document that is still editable, deleting the underlying R2 object too.
+
+**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author, document must be DRAFT or REJECTED.
+
+**Request:** Path params `id`, `attachmentId`. No body.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/documents/doc_1/attachments/att_1"
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+Errors: 403 `{"error":"Csak a készítő törölheti"}`; 409 `{"error":"Beküldött dokumentum melléklete nem törölhető"}`; 404 `{"error":"A melléklet nem található"}`.
+
+---
+
+### `POST /api/polar/checkout`
+
+**Why:** Creates a Stripe Checkout session for a one-off HUF donation and records a pending `Donation` row.
+
+**Auth:** session/bearer (`getSessionWithBearer`).
+
+**Request:** JSON body: `amount` (number, required, minimum 175 HUF).
+
+```bash
+curl -sS -X POST "$HSR_URL/api/polar/checkout" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount":2000}'
+```
+
+**Response:** `{ "url": "https://checkout.stripe.com/..." }`. `401` unauthenticated, `400 "Érvénytelen összeg (minimum 175 Ft)"` for an invalid amount.
+
+---
+
+### `POST /api/shop/checkout`
+
+**Why:** Starts a Stripe Checkout session for a shop cart. Prices, stock and the shipping quote are re-verified server-side from the database rather than trusted from the client cart, and a pending `ShopOrder` is written before redirecting to Stripe so the webhook has something to finalize.
+
+**Auth:** session (`getSessionWithBearer()` — accepts cookie or bearer, so both web and mobile can check out).
+
+**Request:** JSON body — `items` (array of `{ productId: string, quantity: integer 1–100 }`, required, non-empty), `address` (`ShippingAddress`, required only if any item `isPhysical`), `quote` (`ShippingQuote`, required — must not be expired, i.e. `validUntil` in the future), `couponCode` (string, optional — validated as an active Stripe promotion code).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"items":[{"productId":"clp1...","quantity":1}],"quote":{"subtotalHuf":5000,"shippingFeeHuf":0,"vatFeeHuf":0,"service":null,"totalHuf":5000,"validUntil":1234567890000}}' \
+  "$HSR_URL/api/shop/checkout"
+```
+
+**Response:**
+```json
+{ "url": "https://checkout.stripe.com/c/pay/cs_test_..." }
+```
+Errors: `401` unauthenticated; `400` invalid items/expired quote/missing address for physical items/insufficient stock/total below Stripe's 175 HUF minimum/invalid coupon; `409` `{ "error": "quote_stale", "newQuote": { ... } }` when a re-quote for physical items differs from the submitted quote by more than 100 HUF.
+
+---
+
+### `GET /api/shop/orders`
+
+**Why:** A member's own order history, including the Apple Wallet pass serial for any `APPLE_PASS` line item so the buyer can re-download it if the delivery email's attachment was stripped.
+
+**Auth:** session (`getSessionWithBearer()`).
+
+**Request:** no parameters.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/shop/orders"
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "clo1...",
+    "userId": "clu9...",
+    "status": "PAID",
+    "totalHuf": 5000,
+    "createdAt": "2026-09-10T12:00:00.000Z",
+    "items": [
+      {
+        "id": "cli1...",
+        "productId": "clp1...",
+        "quantity": 1,
+        "product": { "id": "clp1...", "nameHu": "HSR bögre", "nameEn": "HSR mug" },
+        "walletPass": null
+      }
+    ]
+  }
+]
+```
+
+---
+
+### `GET /api/shop/orders/[id]`
+
+**Why:** A single order's detail view (line items with product images) for the order confirmation/detail page.
+
+**Auth:** session; ownership check — `order.userId !== session.id` returns 404 (not 403, so a stranger's order id doesn't confirm existence).
+
+**Request:** path param `id` (order id).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/shop/orders/clo1..."
+```
+
+**Response:**
+```json
+{
+  "id": "clo1...",
+  "userId": "clu9...",
+  "status": "PAID",
+  "items": [
+    {
+      "id": "cli1...",
+      "product": { "id": "clp1...", "nameHu": "HSR bögre", "images": [{ "url": "https://s3.hsrgames.hu/..." }] }
+    }
+  ]
+}
+```
+`404` if the order doesn't exist or isn't owned by the caller.
+
+---
+
+### `POST /api/shop/quote`
+
+**Why:** Computes a shipping quote (fee + VAT) for a cart and address before checkout, so the checkout screen can show a real total; re-run at checkout time to catch a stale quote.
+
+**Auth:** session; rate limited via `checkRateLimit(createLimiter, "shop-quote:<userId>")`.
+
+**Request:** JSON body — `items` (array of `{ productId: string, quantity: positive integer }`, required, non-empty), `address` (`ShippingAddress`, optional — if provided, `name`, `phone`, `line1`, `city`, `postalCode`, `country` are all required).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"items":[{"productId":"clp1...","quantity":1}],"address":{"name":"Kovács János","phone":"+36301234567","line1":"Fő utca 1","city":"Budapest","postalCode":"1011","country":"HU"}}' \
+  "$HSR_URL/api/shop/quote"
+```
+
+**Response:**
+```json
+{ "subtotalHuf": 5000, "shippingFeeHuf": 1500, "vatFeeHuf": 0, "service": "MPL", "totalHuf": 6500, "validUntil": 1757760000000 }
+```
+`400` on invalid items/missing address fields, or the underlying quoting error message; `429` if rate limited.
+
+---
+
+### `GET /api/shop/verify`
+
+**Why:** Called from the shop's success page after returning from Stripe Checkout, to finalize the order (mark it paid, trigger fulfillment) as a fallback/immediate path alongside the webhook — `finalizeShopOrderByCheckoutId()` is idempotent, so this and the webhook racing each other is safe.
+
+**Auth:** session (`getSessionWithBearer()`) — note the route does not check that the checkout session's `userId` metadata matches the caller before finalizing (unlike `/api/stripe/verify`'s donation flow).
+
+**Request:** query param — `session_id` (Stripe Checkout session id, required).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/shop/verify?session_id=cs_test_..."
+```
+
+**Response:** one of:
+```json
+{ "status": "completed" }
+```
+```json
+{ "status": "already_completed" }
+```
+```json
+{ "status": "pending" }
+```
+`400` missing `session_id`; `404` order not found.
+
+---
+
+### `POST /api/stripe/checkout`
+
+**Why:** The support-donation checkout flow (distinct from the shop). This route file is a straight re-export (`export { POST } from "@/app/api/polar/checkout/route"`) — the implementation lives at `src/app/api/polar/checkout/route.ts` (a leftover name from a prior payment provider), and creates a Stripe Checkout session plus a pending `Donation` row.
+
+**Auth:** session (`getSessionWithBearer()`).
+
+**Request:** JSON body — `amount` (number, HUF, required, minimum 175).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount":2000}' \
+  "$HSR_URL/api/stripe/checkout"
+```
+
+**Response:**
+```json
+{ "url": "https://checkout.stripe.com/c/pay/cs_test_..." }
+```
+`400` amount below minimum or not a number; `401` unauthenticated.
+
+---
+
+### `POST /api/stripe/verify`
+
+**Why:** Finalizes a donation after returning from Stripe Checkout — the polling counterpart to the webhook for the support/donation flow (separate from `/api/shop/verify`).
+
+**Auth:** session; ownership is explicitly checked against the Stripe session's own `metadata.userId` (`ownerUserId !== auth.id` → 403) — stricter than the shop's verify route.
+
+**Request:** JSON body — `sessionId` (string, required, the Stripe Checkout session id).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"sessionId":"cs_test_..."}' \
+  "$HSR_URL/api/stripe/verify"
+```
+
+**Response:** on `payment_status !== "paid"`:
+```json
+{ "status": "pending" }
+```
+On success, whatever `finalizeDonationByCheckoutId()` returns (donation confirmation payload). `400` missing/invalid `sessionId` or checkout session not in `payment` mode; `403` the checkout session's `userId` metadata doesn't match the caller; `401` unauthenticated.
+
+---
+
+### `GET /api/tickets/mine/[id]`
+
+**Why:** Reads one of the caller's own Discord-bridged support tickets with its full message thread. A ticket that is not the caller's answers `404` rather than `403` — since the id is a cuid, confirming existence at all would leak that somebody else owns a ticket by that id.
+
+**Auth:** Session or bearer (`getSessionWithBearer()`), plus ownership (`ownsTicket()`).
+
+**Request:** Path param `id` (string, required).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/tickets/mine/clt1234567890"
+```
+
+**Response:**
+```json
+{
+  "ticket": {
+    "id": "clt1234567890", "status": "CLOSED", "categoryLabel": "General",
+    "createdAt": "2026-09-01T10:00:00.000Z", "closedAt": "2026-09-01T12:00:00.000Z",
+    "closedByUsername": "staffuser", "claimedByName": "staffuser", "channelId": "1122334455",
+    "rating": { "stars": 5, "comment": "Thanks!", "createdAt": "2026-09-01T12:05:00.000Z" },
+    "messages": [{ "id": "clm...", "discordUsername": "member", "isStaff": false, "content": "Hi", "attachments": [], "createdAt": "2026-09-01T10:00:00.000Z" }]
+  }
+}
+```
+Errors: `401` unauthenticated, `404` not found or not owned by caller.
+
+---
+
+### `POST /api/tickets/mine/[id]/rating`
+
+**Why:** The web half of the ticket star rating — writes the same `DiscordTicketRating` row the Discord-side rating buttons write, so a member can rate wherever they happen to be and the rating board counts it exactly once either way. Only a `CLOSED` ticket may be rated.
+
+**Auth:** Session or bearer (`getSessionWithBearer()`), plus ownership (`ownsTicket()`).
+
+**Request:** Path param `id` (string, required). JSON body — `stars` (integer 1-5, required), `comment` (string, optional, trimmed to 1000 chars).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"stars":5,"comment":"Quick and helpful"}' \
+  "$HSR_URL/api/tickets/mine/clt1234567890/rating"
+```
+
+**Response:** `{ "rating": { "stars": 5, "comment": "Quick and helpful", "createdAt": "2026-09-13T09:00:00.000Z" } }`. Errors: `400` invalid stars or ticket not `CLOSED`, `401` unauthenticated, `404` not found or not owned by caller.
+
+---
+
+### `POST /api/documents/[id]/revise`
+
+**Why:** Take a document that is waiting for signatures or already signed back to draft, to change it. The revision number goes up, every signature and the issued PDF are discarded, and the previous signers are told it has to be signed again.
+
+**Auth:** Session or bearer, `ACCESS_DOCUMENTS`; must be the author. Logged as `DOCUMENT_REVISED`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/cld123/revise"
+```
+
+**Response:** The document (same shape as `GET /api/documents/[id]`) with `status: "DRAFT"` and the new `revision`. `403` not the author, `409` the document is not `PENDING`/`SIGNED` (or changed meanwhile).
 
 ## Admin: Badges, Blacklist, Cargo, Diagnostics, Discord, Dispatch Orders, Documents
 
@@ -1275,6 +4404,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty?unfulfilled=today"
 ```
 Error: `500 { "error": "Failed to fetch duty statistics" }`.
 
+---
+
 ### `GET /api/admin/duty/strikes`
 
 **Why:** Lists weekly duty compliance strikes (warnings/terminations) for the admin panel, with each strike's appeal link precomputed.
@@ -1303,6 +4434,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/strikes?active=true"
 ]
 ```
 Error: `400 { "error": "Invalid userId format" }` when `userId` fails the UUID regex.
+
+---
 
 ### `GET /api/admin/duty/calendar`
 
@@ -1335,6 +4468,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/calendar?userId=u1&month
 ```
 Without `userId`, `"user"` is `null` and duties/stats span all users. Error: `404 { "error": "User not found" }`; `500 { "error": "Failed to fetch calendar data" }`.
 
+---
+
 ### `POST /api/admin/duty/reset`
 
 **Why:** The daily duty reset — closes out any duty still `ACTIVE` from a previous day (auto-ended at midnight) and deletes orphaned `DutyTrain` assignments left behind by old active or completed duties, so stale state doesn't leak into the next day's board (see "Duty Re-entry After a Drop-out").
@@ -1358,6 +4493,8 @@ curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" "$HSR_URL/api/admin/dut
 ```
 Error: `401 { "error": "Unauthorized" }`; `500 { "error": "Failed to reset duties" }`.
 
+---
+
 ### `GET /api/admin/duty/reset`
 
 **Why:** Dry-run/preview counterpart to the reset POST — reports how many active duties and orphaned assignments would be cleaned up, without changing anything (used by the admin UI's "Reset" confirmation).
@@ -1380,6 +4517,8 @@ curl -sS -X GET -H "Authorization: Bearer $CRON_SECRET" "$HSR_URL/api/admin/duty
 }
 ```
 Error: `401 { "error": "Unauthorized" }`; `500 { "error": "Failed to check duties" }`.
+
+---
 
 ### `GET /api/admin/duty/missed-appeals`
 
@@ -1405,6 +4544,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/missed-appeals?status=PE
 ]
 ```
 
+---
+
 ### `GET /api/admin/duty/weekly-driver`
 
 **Why:** Previews the weekly driver summary/announcement before it is sent (which trains/hours/members it would report on).
@@ -1427,6 +4568,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/weekly-driver"
 ```
 Error: `500 { "error": "Failed to load weekly driver preview" }`.
 
+---
+
 ### `POST /api/admin/duty/weekly-driver`
 
 **Why:** Manually triggers the weekly driver summary announcement (normally sent by the `weekly-driver` cron) — resets the weekly stats it reports on as part of sending.
@@ -1447,6 +4590,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 { "success": true, "sent": true, "recipientCount": 1 }
 ```
 (Extra fields come from `sendWeeklyDriverAnnouncement()`'s return value, spread onto the response.) Error: `400 { "error": "Weekly driver send must reset weekly stats" }`; `500 { "error": "Failed to send weekly driver" }`.
+
+---
 
 ### `GET /api/admin/duty/appeals`
 
@@ -1472,6 +4617,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/appeals?status=PENDING"
 ]
 ```
 
+---
+
 ### `GET /api/admin/duty/weekly-check-setting`
 
 **Why:** Reads whether the Monday weekly-duty-compliance cron run is enabled at all (`WeeklyDutySettings` singleton, id 1).
@@ -1489,6 +4636,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/weekly-check-setting"
 { "enabled": true }
 ```
 A missing settings row defaults to `enabled: true` ("the check predates the toggle"). Error: `403 { "error": "Forbidden" }`; `500 { "error": "Failed to fetch weekly duty check setting" }`.
+
+---
 
 ### `PUT /api/admin/duty/weekly-check-setting`
 
@@ -1510,6 +4659,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 { "enabled": false }
 ```
 Error: `403 { "error": "Forbidden" }`; `500 { "error": "Failed to update weekly duty check setting" }`.
+
+---
 
 ### `POST /api/admin/duty/unfulfilled-appeal-link`
 
@@ -1540,6 +4691,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Error: `400 { "error": "userId, trainId and date are required" }` / `{ "error": "Invalid date" }`; `404 { "error": "Train not found" }`; `409 { "error": "Appeal already submitted" }`.
 
+---
+
 ### `GET /api/admin/duty/exemptions`
 
 **Why:** Lists weekly-duty exemptions (leave grants) for the admin panel, optionally scoped to one week.
@@ -1564,6 +4717,8 @@ curl -sS -X GET -b cookies.txt "$HSR_URL/api/admin/duty/exemptions?weekStart=202
 ]
 ```
 
+---
+
 ### `POST /api/admin/duty/exemptions`
 
 **Why:** Grants a member a weekly-duty exemption (excused from the weekly duty minimum) for a date range — same writer path (`createLeaveExemptions`) the support bot's leave flow uses, and emails the member so the exemption isn't only visible in an admin table.
@@ -1587,6 +4742,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 [ { "id": "ex1", "userId": "u1", "weekStart": "2026-09-07T00:00:00.000Z", "weekEnd": "2026-09-13T00:00:00.000Z", "reason": "Vacation" } ]
 ```
 Error: `400 { "error": "userId, weekStart, and weekEnd required" }` / `{ "error": "Invalid date format" }` / `{ "error": "weekEnd must be on or after weekStart" }`.
+
+---
 
 ### `POST /api/admin/duty/[id]/remove`
 
@@ -1617,6 +4774,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Error: `404 { "error": "Duty not found" }`; `500 { "error": "Failed to force remove duty" }`.
 
+---
+
 ### `DELETE /api/admin/duty/[id]/delete`
 
 **Why:** Permanently deletes a duty record (cascades to its `DutyTrain` rows) — for cleaning up erroneous entries entirely, as opposed to force-ending one still in progress.
@@ -1638,6 +4797,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/duty/d1/delete"
 ```
 Error: `404 { "error": "Duty not found" }`; `500 { "error": "Failed to delete duty" }`.
 
+---
+
 ### `PATCH /api/admin/duty/exemptions/[id]`
 
 **Why:** Deactivates or reactivates an existing exemption without deleting it — e.g. a granted leave that needs to be cut short, then possibly restored.
@@ -1658,6 +4819,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 Error: `404 { "error": "Not found" }`.
 
+---
+
 ### `DELETE /api/admin/duty/exemptions/[id]`
 
 **Why:** Permanently revokes an exemption.
@@ -1675,6 +4838,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/duty/exemptions/ex1"
 { "success": true }
 ```
 Error: `404 { "error": "Not found" }`.
+
+---
 
 ### `PATCH /api/admin/duty/missed-appeals/[id]`
 
@@ -1696,6 +4861,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 Side effects: writes `logAppealDecision()`, and if `user.discordEmail` is set, sends the `missedAssignmentAppealDecision` template email in the user's locale. Error: `404 { "error": "Not found" }`; `400 { "error": "Invalid status" }` / `{ "error": "Appeal already reviewed" }`.
 
+---
+
 ### `PATCH /api/admin/duty/appeals/[id]`
 
 **Why:** Approves or rejects a member's appeal against a weekly duty compliance strike; approval clears the strike and restores whatever Discord roles the strike had removed.
@@ -1715,6 +4882,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 { "success": true }
 ```
 Side effects on approval: clears `weeklyDutyStrike.clearedAt`, re-adds each role in `strike.removedRoles` to the user via `addDiscordRole` (300ms spacing between calls), logs `APPEAL_APPROVED` to `ActivityLog`, emails `dutyStrikeAppealDecision` if `discordEmail` set. On rejection: logs `APPEAL_REJECTED` and still emails the decision. Error: `404 { "error": "Not found" }`; `400 { "error": "Invalid status" }` / `{ "error": "Appeal already reviewed" }`.
+
+---
 
 ### `POST /api/admin/duty/strikes/[id]/appeal-link`
 
@@ -1738,6 +4907,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/duty/strikes/strike1/appeal-
 ```
 Error: `404 { "error": "Strike not found" }`; `409 { "error": "Appeal already submitted" }`.
 
+---
+
 ### `POST /api/admin/duty/users/[id]/warn`
 
 **Why:** Issues a manual weekly-duty warning outside the Monday cron — writes the same `WeeklyDutyStrike` row shape the cron writes (`result: "WARNING"`), so a later miss escalates from it rather than starting a fresh cycle.
@@ -1757,6 +4928,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 { "success": true, "strikeId": "strike2" }
 ```
 Side effects: writes `WEEKLY_STRIKE_ISSUED` to `ActivityLog`, emails `dutyManualWarning` template if `discordEmail` set, with an appeal link. Error: `404 { "error": "User not found" }`; `400 { "error": "A reason is required to issue a manual warning" }`; `409 { "error": "This user already has an active warning. You can only terminate them now." }` / `{ "error": "A strike already exists for this user this week" }`.
+
+---
 
 ### `POST /api/admin/duty/users/[id]/terminate`
 
@@ -1828,6 +5001,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/email/queue?status=FAILED&limit=50"
 ```
 Error: `401`/`403` if the flag is missing.
 
+---
+
 ### `POST /api/admin/email/queue`
 
 **Why:** Lets staff re-queue a letter that permanently failed, or force the drain to run now instead of waiting for the next `/api/cron/email-queue` tick.
@@ -1847,6 +5022,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 { "message": "Re-queued" }
 ```
 `action: "drain"` responds `{ "message": "Drained", "sent": 12, "failed": 1, "retried": 0 }`. Errors: `400` "id is required" / "Unknown action", `404` "Not a failed email" (retry on a row that isn't FAILED).
+
+---
 
 ### `GET /api/admin/email/templates`
 
@@ -1879,6 +5056,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/email/templates"
 }
 ```
 
+---
+
 ### `POST /api/admin/email/templates`
 
 **Why:** Renders one template from its own sample data and mails it to the admin who asked — the same letter a member would get, so the whole list can be sanity-checked without waiting for the real trigger. Deliberately takes no recipient parameter: a test that could be aimed at somebody else would be a second, unaudited blast endpoint.
@@ -1898,6 +5077,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 { "message": "Test sent to admin@example.com", "subject": "[TEST] Your closing exam result" }
 ```
 Errors: `400` "Unknown template" / "Your account has no email address, so there is nowhere to send the test.", `429` rate limited.
+
+---
 
 ### `GET /api/admin/email/send`
 
@@ -1921,6 +5102,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/email/send"
 }
 ```
 
+---
+
 ### `POST /api/admin/email/send`
 
 **Why:** The custom email blast — one written letter sent either to a single member by email or to a whole audience. Queueing the whole audience as one `createMany` write (via `sendRawEmails`) rather than one row at a time is what keeps a few-hundred-recipient blast from being cut off half-written mid-request.
@@ -1941,6 +5124,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Single-recipient mode responds `{ "message": "Queued email to user@example.com", "queueLength": 3 }`. Errors: `400` "Subject is required" / "Body is required" / "Unknown audience" / "That audience has nobody with an email address in it", `404` "User not found" (single-recipient mode, no matching `discordEmail`).
 
+---
+
 ### `GET /api/admin/email/queue/stream`
 
 **Why:** Live version of the outbox listing (`GET /api/admin/email/queue`), so a stuck or failing queue is visible without refreshing — a row's *status* changing (PENDING → SENDING → SENT, or a failure landing) is the interesting event, not new rows.
@@ -1958,6 +5143,8 @@ curl -sS -N -b cookies.txt "$HSR_URL/api/admin/email/queue/stream?status=PENDING
 data: {"stats":{"pending":3,"sending":0,"failed":2,"sentLast24h":148,"oldestPendingAt":"2026-09-13T08:12:00.000Z"},"entries":[...],"total":3,"limit":100,"offset":0}
 
 ```
+
+---
 
 ### `GET /api/admin/exam-slots`
 
@@ -1987,6 +5174,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exam-slots"
 ]
 ```
 
+---
+
 ### `POST /api/admin/exam-slots`
 
 **Why:** Manually schedules a closing-exam slot — the same lifecycle the daily vote's cron also creates through `announceExamSlot()` — and invites every eligible trainee of that branch by email. This is the manual form kept alongside the vote; a closing exam otherwise carries no other run buttons on `/admin/exams` (see "A closing exam therefore carries no run buttons on /admin/exams" — Start/End/the cron are the whole lifecycle).
@@ -2013,6 +5202,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 }
 ```
 Errors: `400` "examId and scheduledAt required" / "Invalid exam" (not found, or not a CLOSING_EXAM).
+
+---
 
 ### `GET /api/admin/exam-slots/[id]`
 
@@ -2046,6 +5237,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exam-slots/cmeslot1"
 ```
 Error: `404` "Not found".
 
+---
+
 ### `DELETE /api/admin/exam-slots/[id]`
 
 **Why:** Cancels a scheduled/active slot. Everyone still registered on it (not already `COMPLETED`) is mailed `examSlotCancelled` *before* the delete — deleting first would leave nobody to notify — and told this is not a no-show, since a missed exam otherwise costs deadline days.
@@ -2063,6 +5256,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/exam-slots/cmeslot1"
 { "ok": true, "notified": 5 }
 ```
 Error: `404` "Not found".
+
+---
 
 ### `PUT /api/admin/exam-slots/[id]/attendance`
 
@@ -2084,6 +5279,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 Error: `400` "attendance object required".
 
+---
+
 ### `POST /api/admin/exam-slots/[id]/start`
 
 **Why:** Opens a slot by hand, calling the exact `startExamSlot()` the closing-exam vote's cron calls at the scheduled hour — so a slot an admin opened and one the clock opened behave identically to candidates.
@@ -2102,6 +5299,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/exam-slots/cmeslot1/start"
 ```
 Errors: `404` "Not found", `400` "Slot not in SCHEDULED state".
 
+---
+
 ### `POST /api/admin/exam-slots/[id]/end`
 
 **Why:** Force-stops a slot before its 1-hour window elapses, running the exact same `closeExamSlot()` the `exam-slot-close` cron runs automatically — no-shows are penalised and attendees left to the exam's own grading either way.
@@ -2119,6 +5318,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/exam-slots/cmeslot1/end"
 { "ok": true, "attended": 4, "noShow": 1 }
 ```
 `{ "ok": true }` alone if the slot was already closed. Error: `404` "Not found".
+
+---
 
 ### `GET /api/admin/exams`
 
@@ -2146,6 +5347,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams"
   }
 ]
 ```
+
+---
 
 ### `POST /api/admin/exams`
 
@@ -2175,6 +5378,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` "Missing required fields" / "Invalid audience" / "Invalid time limit mode" / "Passing score must be between 0 and 100" / "Select at least one user for selected users audience" / "Closing exam requires a training branch".
 
+---
+
 ### `GET /api/admin/exams/users`
 
 **Why:** Backs the "selected users" audience picker (used both for regular exams and application forms) with a searchable/id-lookup user list.
@@ -2197,6 +5402,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams/users?search=kov"
 ```
 Error: `500` "Failed to search users".
 
+---
+
 ### `GET /api/admin/exams/folders`
 
 **Why:** Lists exam folders in display order. Folders are pure filing with no access control of their own — anyone who may open the exam section may file in them; per-exam access is still enforced separately.
@@ -2215,6 +5422,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams/folders"
   { "id": "cmefolder1", "name": "Driver", "color": "#4f46e5", "order": 0, "createdById": "cmeuser1" }
 ]
 ```
+
+---
 
 ### `POST /api/admin/exams/folders`
 
@@ -2236,6 +5445,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` "Folder name is required" / "Folder name must be at most 80 characters".
 
+---
+
 ### `PATCH /api/admin/exams/folders/[id]`
 
 **Why:** Renames, recolours or manually reorders one folder.
@@ -2256,6 +5467,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `404` "Folder not found", `400` "Folder name is required" / "Folder name must be at most 80 characters" / "order must be an integer".
 
+---
+
 ### `DELETE /api/admin/exams/folders/[id]`
 
 **Why:** Deletes a folder. The exams inside are not deleted with it — the schema's `onDelete: SetNull` puts them back in the unfiled list — so this is tidying, never a way to lose an exam.
@@ -2273,6 +5486,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/exams/folders/cmefolder1"
 { "success": true, "unfiled": 3 }
 ```
 Error: `404` "Folder not found".
+
+---
 
 ### `GET /api/admin/exams/[id]`
 
@@ -2298,6 +5513,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1"
 ```
 Error: `404` "Exam not found".
 
+---
+
 ### `PUT /api/admin/exams/[id]`
 
 **Why:** Full update of an exam's settings. Clearing `isApplicationForm` is restricted to full exam management, since it would move the exam out of an application-form-only caller's own reach.
@@ -2317,6 +5534,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 { "id": "cmeexam1", "title": "Driver closing exam", "passingScore": 85, "audience": "CLOSING_EXAM", "trainingBranch": "DRIVER" }
 ```
 Errors: `404` "Exam not found", `400` "Invalid audience" / "Passing score must be between 0 and 100" / "timeLimitSeconds must be a positive integer" / "Select at least one user for selected users audience" / "Closing exam requires a training branch".
+
+---
 
 ### `PATCH /api/admin/exams/[id]`
 
@@ -2338,6 +5557,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` "Nothing to update" (missing `folderId` key), `404` "Folder not found".
 
+---
+
 ### `DELETE /api/admin/exams/[id]`
 
 **Why:** Deletes the exam, cascading to its time slots and their registrations. Every candidate registered on a not-yet-sat slot is mailed `examSlotCancelled` before the delete runs — afterwards there is nobody left to name.
@@ -2355,6 +5576,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1"
 { "success": true, "notified": 5 }
 ```
 Error: `404` "Exam not found".
+
+---
 
 ### `GET /api/admin/exams/[id]/stream`
 
@@ -2381,6 +5604,8 @@ data: {"type":"violation","attemptId":"cmeattempt1","userId":"cmeuser2","reason"
 data: {"type":"force_stopped","attemptId":"cmeattempt1"}
 ```
 
+---
+
 ### `POST /api/admin/exams/[id]/toggle`
 
 **Why:** Opens or closes an exam for new attempts. Closing does not end attempts already in progress — it counts them so the admin knows how many can still finish. A `CLOSING_EXAM` never uses this: it has no open/close toggle on `/admin/exams` because Start/End (or the vote's cron) is its whole lifecycle — see "A closing exam therefore carries no run buttons on /admin/exams".
@@ -2398,6 +5623,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/toggle"
 { "isOpen": true, "activeAttempts": 0 }
 ```
 Errors: `404` "Exam not found", `400` "Cannot open an exam with no questions".
+
+---
 
 ### `GET /api/admin/exams/[id]/results`
 
@@ -2430,6 +5657,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/results"
 ```
 Error: `404` "Exam not found".
 
+---
+
 ### `PATCH /api/admin/exams/[id]/results`
 
 **Why:** Restores an archived attempt back onto the live results list.
@@ -2450,6 +5679,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` "Missing attemptId", `404` "Archived attempt not found".
 
+---
+
 ### `DELETE /api/admin/exams/[id]/results`
 
 **Why:** Archives (soft) or permanently deletes one attempt (and its answers, if permanent).
@@ -2469,6 +5700,8 @@ curl -sS -X DELETE -b cookies.txt -H "Content-Type: application/json" \
 { "success": true }
 ```
 Errors: `400` "Missing attemptId", `404` "Attempt not found".
+
+---
 
 ### `POST /api/admin/exams/[id]/send-results`
 
@@ -2493,6 +5726,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/send-results"
 ```
 Errors: `404` "Exam not found", `400` "No new attempts to send results for" / "`N` attempt(s) not yet fully reviewed", `429` "Cooldown active" with `remainingSeconds`.
 
+---
+
 ### `GET /api/admin/exams/[id]/send-results`
 
 **Why:** Reports admission-queue progress for this exam (per-status counts, and the failed jobs' errors), so the results page can show what work remains after a send.
@@ -2516,6 +5751,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/send-results"
 }
 ```
 
+---
+
 ### `POST /api/admin/exams/[id]/upload`
 
 **Why:** Uploads an image (for an IMAGE-type question) to Cloudflare R2, returning the public CDN URL to attach to a question.
@@ -2535,6 +5772,8 @@ curl -sS -X POST -b cookies.txt \
 { "url": "https://s3.hsrgames.hu/exam-images/cmeexam1/6e2b....png" }
 ```
 Errors: `500` "R2 storage not configured", `400` "No file provided" / "Invalid file type. Allowed: JPEG, PNG, GIF, WebP" / "File too large. Maximum 10MB".
+
+---
 
 ### `POST /api/admin/exams/[id]/questions`
 
@@ -2556,6 +5795,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` "Missing required fields" / "Invalid question type" / "Multiple choice questions require options and correct answer", `404` "Exam not found".
 
+---
+
 ### `PUT /api/admin/exams/[id]/questions/[qid]`
 
 **Why:** Updates one question's fields.
@@ -2576,6 +5817,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 Error: `404` "Question not found".
 
+---
+
 ### `DELETE /api/admin/exams/[id]/questions/[qid]`
 
 **Why:** Removes one question and re-sequences the `order` of the remaining questions so there is no gap.
@@ -2594,6 +5837,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/questions/c
 ```
 Error: `404` "Question not found".
 
+---
+
 ### `POST /api/admin/exams/[id]/stop/[attemptId]`
 
 **Why:** Force-stops an in-progress attempt from the live monitor (a proctoring action), scoring it 0 and failed, and broadcasting `force_stopped` on the exam's SSE stream.
@@ -2611,6 +5856,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/exams/cmeexam1/stop/cmeattem
 { "success": true }
 ```
 Error: `404` "Active attempt not found".
+
+---
 
 ### `POST /api/admin/exams/[id]/results/[attemptId]/review`
 
@@ -2674,6 +5921,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/game-stats"
 ```
 Errors: `401 Unauthorized` (no session / user not found), `403 Forbidden`, `500` on failure.
 
+---
+
 ### `GET /api/admin/instructors`
 
 **Why:** Powers `/admin/trainings` → Instructors tab: the live roster of every instructor-rank holder, their weekly credit/session progress against the quota, and which grades they hold — see CLAUDE.md's "Instructor Grades & Weekly Duties" section.
@@ -2711,6 +5960,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/instructors"
 ```
 Error: `500 "Failed to load instructors"` on failure. Exact shape of each instructor row comes from `buildInstructorOverview()`.
 
+---
+
 ### `GET /api/admin/instructors/tracks`
 
 **Why:** Reads the current on/off state of each supervision branch (driver/dispatcher/etc.) — the per-programme `supervisionEnabled` switch surfaced on `/admin/trainings` → Settings.
@@ -2733,6 +5984,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/instructors/tracks"
 }
 ```
 
+---
+
 ### `POST /api/admin/instructors/tracks`
 
 **Why:** Opens or closes a supervision branch. Turning a branch on is what starts issuing warnings/deadlines for trainees on it; turning it off stops trainees on that branch from submitting supervisions.
@@ -2748,6 +6001,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** the updated `getTrackConfig()` result, same shape as the GET above. `400` if `track`/`enabled` are missing or invalid: `{"error":"track (one of: DRIVER, DISPATCHER) and enabled (boolean) are required"}`. Writes `SUPERVISION_TRACK_ENABLED`/`SUPERVISION_TRACK_DISABLED` to `ActivityLog`.
+
+---
 
 ### `GET /api/admin/instructors/terminated`
 
@@ -2784,6 +6039,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/instructors/terminated"
 ```
 Error: `500 "Failed to load terminated instructors"`.
 
+---
+
 ### `POST /api/admin/instructors/[id]/revoke-strike`
 
 **Why:** Clears an open (non-terminated) weekly-quota warning — the admin deciding the warning should not have stood, distinct from an appeal approval which stays on record as evidence.
@@ -2800,6 +6057,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "success": true }`. `404 "This instructor has no open warning"` if there is no open `InstructorStrike` with `result: "WARNING"`. Clears `terminationDue`/`terminationDueAt`, writes `INSTRUCTOR_STRIKE_REVOKED` to `ActivityLog`, and emails the instructor with template `instructorWarningRevoked` if `discordEmail` is set.
 
+---
+
 ### `POST /api/admin/instructors/[id]/warn`
 
 **Why:** Manual warning issued from the admin page, writing the same `InstructorStrike` row the automatic Monday quota check would write — so the next automatic run escalates from it instead of starting over.
@@ -2815,6 +6074,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "success": true, "strikeId": "strike_id" }`. `404 "Instructor not found"` if not currently in `listInstructors()`. `409 "This instructor already has an open warning"` if one already exists. Creates an `InstructorStrike` row (`result: "WARNING"`, `manual: true`), writes `INSTRUCTOR_STRIKE_ISSUED` to `ActivityLog`, and emails template `instructorQuotaWarning` if `discordEmail` is set.
+
+---
 
 ### `POST /api/admin/instructors/[id]/terminate`
 
@@ -2833,6 +6094,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 **Response:** `{ "success": true, "strikeId": "strike_id" }`.
 Errors: `400 "confirm must be true"`, `400 "You cannot terminate yourself"`, `404 "Instructor not found"`, `400 "Website admins are exempt from the quota and cannot be terminated here"`, `502 "Failed to remove an instructor role on Discord — nothing was changed"` (Discord call fails — nothing is written to the DB in that case, Discord is attempted first). On success: removes every role in `instructor.instructorRoleIds` via Discord, upserts an `InstructorStrike` (`result: "TERMINATION"`), closes any open WARNING strike, logs `INSTRUCTOR_TERMINATED`, and emails template `instructorTermination` if `discordEmail` is set.
 
+---
+
 ### `POST /api/admin/instructors/[id]/revoke-termination`
 
 **Why:** Reverses a termination: grants the Instructor Discord role(s) back and marks the termination strike cleared so `listTerminatedInstructors()` stops surfacing it.
@@ -2848,6 +6111,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "success": true }`. `404 "This instructor has no active termination to revoke"` if there is no cleared-false `TERMINATION` strike with `terminatedAt` set. `502 "Failed to grant an instructor role back on Discord — nothing was changed"` if the Discord grant fails (Discord attempted before any DB write). Restores exactly the roles recorded on the strike's `removedRoles` (falling back to the bare `INSTRUCTOR_ROLE_ID` for older rows with nothing recorded), clears the strike, logs `INSTRUCTOR_TERMINATION_REVOKED`, and emails template `instructorTerminationRevoked` last, after the role and DB state are already updated.
+
+---
 
 ### `GET /api/admin/permissions/flags`
 
@@ -2874,6 +6139,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/permissions/flags"
 }
 ```
 
+---
+
 ### `POST /api/admin/permissions/sync-discord-roles`
 
 **Why:** Manually pulls the guild's current role list (names, colours, `position`, `managed`) into the `DiscordGuildRole` mirror — the "Sync now" action on `/admin/permissions`, used when a role was just renamed/recreated/reordered on Discord and the hierarchy shouldn't wait for the 60s cache or the stale-check to catch up.
@@ -2887,6 +6154,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/permissions/sync-discord-rol
 ```
 
 **Response:** `{ "synced": 47 }` (number of roles synced). `502 "Failed to fetch roles from Discord"` if `syncGuildRolesToDb()` returns null. Logs `SYNC_DISCORD_ROLES` to `ActivityLog`.
+
+---
 
 ### `GET /api/admin/permissions/roles`
 
@@ -2936,6 +6205,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/permissions/roles"
 }
 ```
 
+---
+
 ### `PUT /api/admin/permissions/roles`
 
 **Why:** Sets the full list of permission flags a Discord role grants — the default flags row on `/admin/permissions` per role.
@@ -2951,6 +6222,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "success": true }`. `400` if `discordRoleId`/`flags` missing or not an array, or `{"error":"Some flags are invalid"}` if any flag name doesn't exist. Replaces the role's `RolePermission` rows in a transaction, logs `PERMISSION_ROLE_UPDATED`.
+
+---
 
 ### `PATCH /api/admin/permissions/roles`
 
@@ -2968,6 +6241,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "success": true, "isRankOverride": false, "isRank": false }`. `400 "discordRoleId is required"`, `400 "isRank must be true, false or null"`, `404 "Unknown Discord role"`. Updates `DiscordGuildRole.isRank`, invalidates the cached hierarchy, logs `PERMISSION_ROLE_RANK_UPDATED`.
 
+---
+
 ### `POST /api/admin/permissions/roles`
 
 **Why:** Points a rank anchor (e.g. `DIRECTOR_GENERAL`) at a specific Discord role — the repair for a shipped default anchor id going stale when the guild renames or recreates that role. This is exactly the "Anchors are assignable" mechanism from CLAUDE.md's Permission System section.
@@ -2983,6 +6258,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "success": true }`. `400 "Unknown anchor"`, `400 "discordRoleId is required"` (when not explicitly `null`), `404 "Unknown Discord role"`, `400 "That role is outside the rank hierarchy — include it first"` (role fails `countsAsRank()` — assigning it would just re-create the priority-0 breakage this endpoint exists to fix). Upserts `RoleAnchorAssignment`, invalidates the hierarchy cache, logs `PERMISSION_ANCHOR_UPDATED`.
+
+---
 
 ### `GET /api/admin/permissions/users`
 
@@ -3017,6 +6294,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/permissions/users?search=kovacs&page
 }
 ```
 
+---
+
 ### `GET /api/admin/permissions/users/[userId]`
 
 **Why:** Detail view behind clicking a user on `/admin/permissions` — role-derived flags before overrides, effective flags after, and the override rows themselves (with reason/granter).
@@ -3049,6 +6328,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/permissions/users/clx1"
 ```
 `404 "User not found"` for an unknown id.
 
+---
+
 ### `PUT /api/admin/permissions/users/[userId]`
 
 **Why:** Replaces a user's permission-override set (per-user GRANT/REVOKE on top of their role's flags) — how `/admin/permissions` grants an exceptional permission (e.g. `VIEW_TRACK_MAP`) or revokes one a rank would otherwise carry.
@@ -3065,6 +6346,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "success": true }`. `400 "overrides array is required"`, `404 "User not found"`, `400 "Cannot set permission overrides for admin users"`, `400 "Invalid flag: <name>"` for any unknown flag name. Replaces `UserPermissionOverride` rows in a transaction, logs `PERMISSION_USER_OVERRIDE`.
 
+---
+
 ### `DELETE /api/admin/permissions/users/[userId]`
 
 **Why:** Clears every permission override for a user in one action — the "reset to role defaults" button.
@@ -3078,6 +6361,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/permissions/users/clx1"
 ```
 
 **Response:** `{ "success": true }`. Deletes all `UserPermissionOverride` rows for the user, logs `PERMISSION_USER_OVERRIDE` ("Cleared all permission overrides for user ...").
+
+---
 
 ### `GET /api/admin/locomotive-pool`
 
@@ -3107,6 +6392,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/locomotive-pool"
 }
 ```
 
+---
+
 ### `POST /api/admin/locomotive-pool/inspector-roles`
 
 **Why:** Assigns an inspector rank to a service (`pairGroup`), or in bulk to every pair whose outbound train matches one of the given `trainTypes` — the drag-a-rank-onto-a-pair / "assign to a whole class of services" actions on the Inspectors tab (see CLAUDE.md's `InspectorPairRole` note: a pair with no rows is open to every inspector).
@@ -3123,6 +6410,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `201` with `{ "created": [{ "id": "ir2", "pairGroup": "IC12", "discordRoleId": "222" }, "..."] }`, or `{ "created": [], "skipped": 0 }` if no matching pairs. `400 "discordRoleId is required"`, `400 "pairGroup or trainTypes is required"`. Uses `createMany` + `skipDuplicates`, so re-running a bulk assign is a no-op on pairs that already carry the rank. Logs `INSPECTOR_PAIR_ROLE_ASSIGNED`.
 
+---
+
 ### `DELETE /api/admin/locomotive-pool/inspector-roles`
 
 **Why:** Removes one rank↔pair mapping, or every mapping for a given rank at once — undoing an inspector assignment.
@@ -3136,6 +6425,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/locomotive-pool/inspector-
 ```
 
 **Response:** `{ "ok": true }` (by `id`) or `{ "ok": true, "removed": 4 }` (by `discordRoleId`). `400 "id or discordRoleId is required"` if neither given. Logs `INSPECTOR_PAIR_ROLE_REMOVED`.
+
+---
 
 ### `PATCH /api/admin/locomotive-pool/inspector-roles`
 
@@ -3153,21 +6444,7 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "enabled": true, "maxPerPair": 2 }`. Upserts `InspectorSettings` (id 1); logs `INSPECTOR_SETTINGS_UPDATED` only if at least one field changed.
 
-### `POST /api/admin/locomotive-pool/assignments`
-
-**Why:** Assigns a locomotive chip to a service pair — the "drop event" when an admin drags a chip onto a pair on the locomotive board.
-
-**Auth:** `MANAGE_LOCOMOTIVE_POOL` (`canManageLocomotivePool()`).
-
-**Request:** JSON body: `pairGroup` (string, required), `chipId` (string, required).
-
-```bash
-curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"pairGroup":"IC12","chipId":"chip1"}' \
-  "$HSR_URL/api/admin/locomotive-pool/assignments"
-```
-
-**Response:** `201` with `{ "id": "a2", "pairGroup": "IC12", "chipId": "chip1", "order": 1 }`. `400` if either field missing, `404 "Chip not found"`. Idempotent via `upsert` on the `pairGroup_chipId` unique constraint. Logs `LOCOMOTIVE_ASSIGNMENT_CREATED`.
+---
 
 ### `POST /api/admin/locomotive-pool/chips`
 
@@ -3185,19 +6462,7 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `201` with `{ "id": "chip2", "number": "V43 1234", "roleIds": [], "imageUrl": null }`. `400 "number is required"`, `409 "This locomotive number already exists"`. Logs `LOCOMOTIVE_CHIP_CREATED`.
 
-### `DELETE /api/admin/locomotive-pool/assignments/[id]`
-
-**Why:** Removes a single chip↔pair assignment (does not delete the chip itself) — dragging a chip off a pair.
-
-**Auth:** `MANAGE_LOCOMOTIVE_POOL` (`canManageLocomotivePool()`).
-
-**Request:** Path param `id` (assignment id).
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/locomotive-pool/assignments/a2"
-```
-
-**Response:** `{ "success": true }`. `500 "Failed to delete locomotive assignment"` if the assignment id doesn't exist (Prisma `delete` throws). Logs `LOCOMOTIVE_ASSIGNMENT_DELETED` naming the chip number and pair.
+---
 
 ### `PATCH /api/admin/locomotive-pool/chips/[id]`
 
@@ -3215,6 +6480,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "id": "chip1", "matchOverride": "V43-1234", "operator": "MAV" }`. `500` if the chip id doesn't exist. Logs `LOCOMOTIVE_CHIP_UPDATED`.
 
+---
+
 ### `DELETE /api/admin/locomotive-pool/chips/[id]`
 
 **Why:** Removes a chip entirely from the pool, cascading its pair assignments and role restrictions.
@@ -3228,6 +6495,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/locomotive-pool/chips/chip
 ```
 
 **Response:** `{ "success": true }`. `500` if the chip doesn't exist. Logs `LOCOMOTIVE_CHIP_DELETED`.
+
+---
 
 ### `PUT /api/admin/locomotive-pool/chips/[id]/roles`
 
@@ -3245,6 +6514,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "id": "chip1", "roleIds": ["111", "222"] }`. `404 "Chip not found"`. Deletes and recreates `LocomotiveChipRole` rows in a transaction. Logs `LOCOMOTIVE_CHIP_ROLES_UPDATED`.
 
+---
+
 ### `POST /api/admin/locomotive-pool/chips/[id]/image`
 
 **Why:** Uploads/replaces the photo shown on a locomotive pool chip, stored in Cloudflare R2.
@@ -3261,6 +6532,8 @@ curl -sS -X POST -b cookies.txt \
 
 **Response:** `{ "imageUrl": "https://s3.hsrgames.hu/locomotive-pool/chip1/<uuid>.jpg" }`. `500 "R2 storage not configured"` if R2 env vars aren't set, `404 "Chip not found"`, `400 "No file provided"`, `400 "Invalid file type. Allowed: JPEG, PNG, GIF, WebP"`, `400 "File too large. Maximum 10MB"`. Writes the object to R2 under a random UUID key, updates `LocomotiveChip.imageUrl`, logs `LOCOMOTIVE_CHIP_IMAGE_UPDATED`.
 
+---
+
 ### `GET /api/admin/maintenance`
 
 **Why:** Reads the current site-wide maintenance-mode state (on/off + message) for the admin toggle UI.
@@ -3274,6 +6547,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/maintenance"
 ```
 
 **Response:** `{ "enabled": false, "message": null }`.
+
+---
 
 ### `PUT /api/admin/maintenance`
 
@@ -3290,6 +6565,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "enabled": true, "message": "Deploying a database migration, back in 10 minutes." }`. Upserts `MaintenanceSettings` (id 1), logs `MAINTENANCE_MODE_TOGGLED`. `500 "Failed to update maintenance settings"` on failure.
+
+---
 
 ### `GET /api/admin/perf-stats/stream`
 
@@ -3314,6 +6591,8 @@ curl -sS -N -b cookies.txt "$HSR_URL/api/admin/perf-stats/stream"
 }
 ```
 Errors: `401 Unauthorized` (no session / user not found), `403 Forbidden` if not `canViewPerfMonitor()`.
+
+---
 
 ### `GET /api/admin/perf-stats/history`
 
@@ -3390,6 +6669,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/schedule-request?status=PENDING&date
 ```
 Error: `403 Forbidden`; `500` on query failure.
 
+---
+
 ### `PUT /api/admin/schedule-request`
 
 **Why:** Approve or reject a driver/dispatcher booking. Approving a DRIVER request against a train re-runs the same conflict checks the booking form already applied (a train claimed by another approved driver, or a departure-time clash within the driver's other approved bookings), auto-rejects any other still-PENDING requests for that same train/date, and notifies everyone affected.
@@ -3410,19 +6691,7 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` missing `requestId`/`status`, invalid `status` value, missing `trackNumber` on a DRIVER approval, or a time/train conflict (`{"error": "Time conflict: this driver already has train 9012 departing at 08:15 on this date", "conflicts": [...]}` / `"This train is already assigned to another driver for this date"`); `403` wrong-branch permission; `404` request not found.
 
-### `DELETE /api/admin/schedule-request?id=<requestId>`
-
-**Why:** Remove a schedule request entirely (not a status change) — used to clear out a mistaken or stale booking.
-
-**Auth:** `requireAuth()`; permission is checked against the request's own `requestType` the same way as `PUT` (`MANAGE_SCHEDULE_MVK`/`MANAGE_SCHEDULE_FSZT`), or `canViewAdminPanel()`.
-
-**Request:** Query param `id` (string, required).
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/schedule-request?id=clx..."
-```
-
-**Response:** `{ "success": true }`. Errors: `400` missing `id`; `403` forbidden; `404` not found (either lookup or the delete helper itself).
+---
 
 ### `GET /api/admin/schedule-request/missed-assignment-penalty-setting`
 
@@ -3442,6 +6711,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/schedule-request/missed-assignment-p
 ```
 Falls back to this exact shape (defaults) when no `MissedAssignmentPenaltySettings` row exists yet. `403` if unauthorized; `500` on failure.
 
+---
+
 ### `PUT /api/admin/schedule-request/missed-assignment-penalty-setting`
 
 **Why:** Update the penalty tunables (window length, decay half-life, appeal weights, dispatcher opt-in).
@@ -3458,6 +6729,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** the upserted settings row, same shape as GET. `403` forbidden; `500` on failure.
 
+---
+
 ### `GET /api/admin/schedule-request/auto-assign-setting`
 
 **Why:** Reads the same-day auto-assign master switch (whether the system may automatically assign drivers/dispatchers to today's trains).
@@ -3471,6 +6744,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/schedule-request/auto-assign-setting
 ```
 
 **Response:** `{ "enabled": false }` (reads `ScheduleSettings.autoAssignEnabled`, defaulting to `false` if the singleton row doesn't exist). `403`/`500` on failure.
+
+---
 
 ### `PUT /api/admin/schedule-request/auto-assign-setting`
 
@@ -3486,6 +6761,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "enabled": true }`. Writes `SCHEDULE_AUTO_ASSIGN_TOGGLED` to the activity log. `403`/`500` on failure.
+
+---
 
 ### `POST /api/admin/schedule-request/auto-assign`
 
@@ -3503,6 +6780,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** whatever `runScheduleAutoAssign()` returns (assignment plan/results per train, keyed by scope) — passed straight through as JSON. Errors: `400` missing `date` or invalid `scope`; `403` insufficient scope permission; `500` on failure.
 
+---
+
 ### `POST /api/admin/schedule-request/update-email`
 
 **Why:** Manually trigger the "your schedule changed" notification emails for a given date — used when an admin edits assignments outside the normal approve/reject flow and still wants affected drivers/dispatchers notified.
@@ -3517,6 +6796,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** whatever `sendScheduleUpdateEmails(date, actorId)` returns (e.g. counts of emails queued) passed through as JSON. `400` missing `date`; `403` forbidden; `500` on failure.
+
+---
 
 ### `GET /api/admin/stations`
 
@@ -3536,6 +6817,8 @@ curl -sS "$HSR_URL/api/admin/stations"
 ```
 `500` on query failure.
 
+---
+
 ### `POST /api/admin/stations`
 
 **Why:** Add a new station to the line.
@@ -3550,6 +6833,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `201` with the created station. `400` if `name`/`km`/`order` missing; `500` on failure (including a unique-`order` collision surfaced as a generic 500).
+
+---
 
 ### `PUT /api/admin/stations`
 
@@ -3566,19 +6851,7 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** the updated station row. `400` missing `id`; `500` on failure.
 
-### `DELETE /api/admin/stations?id=<stationId>`
-
-**Why:** Remove a station from the line.
-
-**Auth:** `MANAGE_TRAINS`.
-
-**Request:** Query param `id` (required).
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/stations?id=cls2"
-```
-
-**Response:** `{ "success": true }`. `400` missing `id`; `500` on failure (e.g. FK constraint from existing `ScheduleStop` rows referencing it — surfaces as a generic 500, not a specific error message).
+---
 
 ### `PATCH /api/admin/stations`
 
@@ -3598,6 +6871,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 [ { "id": "cls2", "name": "Vác", "km": 34, "order": 0 }, { "id": "cls1", "name": "Budapest-Nyugati", "km": 0, "order": 1 } ]
 ```
 Errors: `400` if `order` is not an array of strings, or doesn't list every station exactly once (missing, duplicate, or unknown id); `500` on transaction failure.
+
+---
 
 ### `POST /api/admin/stops`
 
@@ -3619,19 +6894,7 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 `400` missing `trainId`/`stationId`; `500` on failure.
 
-### `DELETE /api/admin/stops?trainId=<id>&stationId=<id>`
-
-**Why:** Remove a single stop row (train does not call at this station).
-
-**Auth:** `MANAGE_TRAINS`.
-
-**Request:** Query params `trainId`, `stationId` (both required).
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/stops?trainId=clt1&stationId=cls2"
-```
-
-**Response:** `{ "success": true }`. `400` missing either param; `500` on failure (e.g. row not found — surfaces as generic 500 since Prisma's `delete` throws on a missing record).
+---
 
 ### `PUT /api/admin/stops`
 
@@ -3653,6 +6916,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 Errors: `400` if `trainId` is not a string or `stops` is not an array; `404` train not found; `500` on transaction failure.
 
+---
+
 ### `GET /api/admin/shop/settings`
 
 **Why:** Read the shop's global settings (whether the shop is enabled at all, and the fallback shipping fee used when Printful can't quote one) — upserts the singleton row (`id: 1`) on first read so the page never has to handle "no settings exist yet".
@@ -3666,6 +6931,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/settings"
 ```
 
 **Response:** `{ "id": 1, "shopEnabled": true, "fallbackShippingFeeHuf": 1500 }`. `500` on failure.
+
+---
 
 ### `PATCH /api/admin/shop/settings`
 
@@ -3681,6 +6948,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** the upserted settings row. `500` on failure.
+
+---
 
 ### `GET /api/admin/shop/products`
 
@@ -3700,6 +6969,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/products?active=true&search=bad
 ```
 `500` on failure.
 
+---
+
 ### `POST /api/admin/shop/products`
 
 **Why:** Create a new shop product, physical (Printful/manual fulfillment) or digital (e.g. `APPLE_PASS`).
@@ -3715,6 +6986,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `201` with the created product. `400` if any required field is missing (including `fulfillmentType` for a non-physical product with none supplied); `500` on failure.
+
+---
 
 ### `GET /api/admin/shop/products/[id]`
 
@@ -3734,6 +7007,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/products/shp1"
 ```
 `404` if not found; `500` on failure.
 
+---
+
 ### `PATCH /api/admin/shop/products/[id]`
 
 **Why:** Edit a product's fields. Uses an explicit allowlist so a client can never write to fields outside the update surface (e.g. `id`, `createdAt`).
@@ -3749,6 +7024,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** the updated product row. `500` on failure (no explicit 404 check before the update — a missing id surfaces as a generic 500 from Prisma).
 
+---
+
 ### `DELETE /api/admin/shop/products/[id]`
 
 **Why:** Remove a product. A product with existing order history is soft-deleted (deactivated) instead of removed, since deleting it would corrupt the order history's product reference; a product with no orders is hard-deleted along with its uploaded R2 images (Printful-sourced image URLs are left alone, since nothing was uploaded to R2 for them).
@@ -3762,6 +7039,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/shop/products/shp1"
 ```
 
 **Response:** `{ "ok": true, "softDeleted": true }` (has order history) or `{ "ok": true, "softDeleted": false }` (hard-deleted). `404` if not found; `500` on failure (R2 delete failures for individual images are caught and logged, not fatal to the request).
+
+---
 
 ### `POST /api/admin/shop/products/[id]/images`
 
@@ -3777,6 +7056,8 @@ curl -sS -X POST -b cookies.txt -F "file=@badge.png" "$HSR_URL/api/admin/shop/pr
 
 **Response:** `201` `{ "id": "img2", "url": "https://s3.hsrgames.hu/shop-images/shp1/<uuid>.png" }`. Errors: `404` product not found; `503` R2 not configured; `400` no file / invalid type / too large; `500` on upload failure.
 
+---
+
 ### `DELETE /api/admin/shop/products/[id]/images/[imgId]`
 
 **Why:** Remove a single product image — deletes the R2 object first (if it's an uploaded one, not a Printful-hotlinked one) then the DB row.
@@ -3790,6 +7071,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/shop/products/shp1/images/
 ```
 
 **Response:** `{ "ok": true }`. `404` image not found for that product; `500` on failure (R2 deletion failure is caught/logged, not fatal).
+
+---
 
 ### `POST /api/admin/shop/products/[id]/images/import-printful`
 
@@ -3805,6 +7088,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/shop/products/shp1/images/im
 
 **Response:** `{ "imported": 3 }` — count of images created. Errors: `404` product not found; `400` no `printfulSyncProductId` linked, an unparseable id, or no matching variant found on Printful's side; `500` on failure. **External API call**: `getPrintfulSyncProduct()` hits the Printful API — a Printful outage or an invalid/revoked API token surfaces here as a `500 Internal server error` (the route does not distinguish Printful failures from any other exception).
 
+---
+
 ### `GET /api/admin/shop/printful/sync-products`
 
 **Why:** Browse the Printful account's sync products (paginated) so an admin can pick one to link to a local `ShopProduct`.
@@ -3819,6 +7104,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/printful/sync-products?offset=0
 
 **Response:** whatever `listPrintfulSyncProducts()` returns — the Printful sync-products list payload (ids, names, thumbnails) — passed through as JSON. `500` on failure. **External API call**: this proxies directly to Printful; a Printful outage, rate limit, or bad API key returns `500 Internal server error` here with no distinguishing detail.
 
+---
+
 ### `GET /api/admin/shop/printful/sync-products/[id]`
 
 **Why:** Fetch one Printful sync product's full detail (its variants and their preview files) — used both by the linking UI and internally by the image-import route.
@@ -3832,6 +7119,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/printful/sync-products/123456"
 ```
 
 **Response:** whatever `getPrintfulSyncProduct()` returns (sync product + `sync_variants[]`, each with `files[]` carrying `visible`/`preview_url`). `500` on failure. **External API call**: same as above — a Printful-side failure (down, rate-limited, invalid id) surfaces as a generic `500`.
+
+---
 
 ### `GET /api/admin/shop/orders`
 
@@ -3851,6 +7140,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/orders?status=PAID"
 ```
 `500` on failure.
 
+---
+
 ### `GET /api/admin/shop/orders/[id]`
 
 **Why:** Fetch one order's full detail, including the buyer's Discord contact info and each item's product images, for the order detail panel.
@@ -3864,6 +7155,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/shop/orders/ord1"
 ```
 
 **Response:** the order with `user` (incl. `discordId`, `discordEmail`) and `items[].product.images` (first image only, by `sortOrder`). `404` not found; `500` on failure.
+
+---
 
 ### `PATCH /api/admin/shop/orders/[id]`
 
@@ -3881,6 +7174,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** the updated order, same include shape as GET. `404` not found; `500` on failure (email send failures are caught/logged, not fatal to the request — the order still updates).
 
+---
+
 ### `DELETE /api/admin/shop/orders/[id]`
 
 **Why:** Permanently delete an order and its line items (e.g. a test/duplicate order) — unlike products, there's no soft-delete path here.
@@ -3894,6 +7189,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/shop/orders/ord1"
 ```
 
 **Response:** `{ "success": true }`. `404` not found; `500` on failure.
+
+---
 
 ### `PATCH /api/admin/shop/orders/[id]/items/[itemId]`
 
@@ -3911,6 +7208,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** the updated `ShopOrderItem`. `404` if the item doesn't belong to that order; `500` on failure.
 
+---
+
 ### `POST /api/admin/shop/orders/[id]/resubmit-printful`
 
 **Why:** Retry sending an order to Printful for fulfillment after a prior submission failed (network error, Printful-side rejection, etc.) — the manual counterpart to the `shop-printful-retry` cron.
@@ -3925,7 +7224,55 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/shop/orders/ord1/resubmit-pr
 
 **Response:** `{ "ok": true }`. **External API call**: `submitOrderToPrintful()` calls the Printful order-creation API — any failure (down, rejected line item, invalid address, rate limit) is caught and returned as `{ "error": "<thrown message>" }` with status `500`, so unlike most routes here the error text can carry Printful's own rejection reason.
 
-## Admin: Statistics, Supervision Rules, Terms, Discord Tickets, Track Map
+---
+
+### `DELETE /api/admin/schedule-request`
+
+**Why:** Remove a schedule request entirely (not a status change) — used to clear out a mistaken or stale booking.
+
+**Auth:** `requireAuth()`; permission is checked against the request's own `requestType` the same way as `PUT` (`MANAGE_SCHEDULE_MVK`/`MANAGE_SCHEDULE_FSZT`), or `canViewAdminPanel()`.
+
+**Request:** Query param `id` (string, required).
+
+```bash
+curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/schedule-request?id=clx..."
+```
+
+**Response:** `{ "success": true }`. Errors: `400` missing `id`; `403` forbidden; `404` not found (either lookup or the delete helper itself).
+
+---
+
+### `DELETE /api/admin/stations`
+
+**Why:** Remove a station from the line.
+
+**Auth:** `MANAGE_TRAINS`.
+
+**Request:** Query param `id` (required).
+
+```bash
+curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/stations?id=cls2"
+```
+
+**Response:** `{ "success": true }`. `400` missing `id`; `500` on failure (e.g. FK constraint from existing `ScheduleStop` rows referencing it — surfaces as a generic 500, not a specific error message).
+
+---
+
+### `DELETE /api/admin/stops`
+
+**Why:** Remove a single stop row (train does not call at this station).
+
+**Auth:** `MANAGE_TRAINS`.
+
+**Request:** Query params `trainId`, `stationId` (both required).
+
+```bash
+curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/stops?trainId=clt1&stationId=cls2"
+```
+
+**Response:** `{ "success": true }`. `400` missing either param; `500` on failure (e.g. row not found — surfaces as generic 500 since Prisma's `delete` throws on a missing record).
+
+## Admin: Statistics, Supervision Rules, Discord Tickets
 
 ### `GET /api/admin/statistics`
 
@@ -4022,6 +7369,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/statistics?days=30"
 ```
 Errors: 401/403 from `requirePermission`; 500 on unexpected error.
 
+---
+
 ### `GET /api/admin/statistics/activity`
 
 **Why:** Backs the Activity tab — is the server large but quiet? Breaks activity down by role, join-month cohort, a quietest-members ranking, and daily volume, with a configurable "active" threshold.
@@ -4077,6 +7426,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/statistics/activity?threshold=30&day
 ```
 `leastActive` is capped at 50 rows. Errors: 401/403; 500.
 
+---
+
 ### `GET /api/admin/statistics/backfill`
 
 **Why:** Reports the state of the activity-history crawl (`DiscordActivityBackfill`), so the page can show a live progress bar instead of a blind "Start" button.
@@ -4095,6 +7446,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/statistics/backfill"
 ```
 `progress` may be `null` if a crawl has never been started.
 
+---
+
 ### `POST /api/admin/statistics/backfill`
 
 **Why:** Starts (or resumes) the message-history crawl that makes "never posted" mean something more than "not since the bot started counting".
@@ -4112,6 +7465,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** 200 `{ "started": true, "days": 90, "resumed": false }`. 409 `{ "error": "..." }` if a crawl is already running or otherwise refuses to start (`startBackfill()` reason).
+
+---
 
 ### `GET /api/admin/statistics/members`
 
@@ -4183,6 +7538,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/statistics/members?status=inactive&s
 ```
 Errors: 401/403; 500.
 
+---
+
 ### `POST /api/admin/statistics/sync`
 
 **Why:** The "Sync now" button — pulls the live Discord guild member list into the `DiscordGuildMember` mirror on demand, for "I just changed roles, show me" rather than waiting for the cron.
@@ -4196,6 +7553,8 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/statistics/sync"
 ```
 
 **Response:** 200 `{ "success": true, ... }` (spreads `runCommunityStatsSync()`'s result). **429** `{ "error": "Sync cooldown active", "retryInSeconds": 87 }` if fired within **2 minutes** of the last sync. **502** `{ "error": "Discord is unreachable — the mirror was left untouched" }` if Discord could not be reached. 500 on unexpected error.
+
+---
 
 ### `GET /api/admin/supervision/fault-types`
 
@@ -4232,6 +7591,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/supervision/fault-types?track=DRIVER
 }
 ```
 
+---
+
 ### `POST /api/admin/supervision/fault-types`
 
 **Why:** Adds a new rulebook entry when the Head of Education decides on a new fault to grade against.
@@ -4257,6 +7618,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** 200 `{ "faultType": { "id": "...", "code": "KURT_HASZNALATA_ELMULASZTVA", "label": "...", ... } }`. 400 `{ "error": "Invalid JSON body" }` or `{ "error": "label is required" }`. 500 on failure.
+
+---
 
 ### `PATCH /api/admin/supervision/fault-types/[id]`
 
@@ -4286,6 +7649,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** 200 `{ "faultType": { ...updated } }`. 400 invalid JSON. 404 `{ "error": "Fault type not found" }`. 500 on failure.
 
+---
+
 ### `DELETE /api/admin/supervision/fault-types/[id]`
 
 **Why:** Retires a rulebook entry. Preserves history: an entry already used by a marked `SupervisionFault` is deactivated rather than deleted, so past sessions and reports still name it.
@@ -4299,6 +7664,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/supervision/fault-types/cl
 ```
 
 **Response:** 200 `{ "success": true, "retained": true }` (`retained: true` if it was deactivated rather than hard-deleted, i.e. `SupervisionFault` rows reference it). 404 if not found. 500 on failure.
+
+---
 
 ### `GET /api/admin/supervision/members`
 
@@ -4323,6 +7690,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/supervision/members?q=kov"
 ```
 Capped at 10 results, banned users excluded.
 
+---
+
 ### `GET /api/admin/supervision/reports`
 
 **Why:** The Head of Education's cross-trainee report — which catalogue items fire most, and for whom — grouped the same way the trainee's own summary is.
@@ -4337,6 +7706,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/supervision/reports?days=30"
 ```
 
 **Response:** Shape comes from `buildSupervisionReport()` (not read here); it is a JSON object with fault/frequency aggregates and per-member breakdowns. 500 `{ "error": "Failed to build report" }` on failure.
+
+---
 
 ### `POST /api/admin/supervision/sessions`
 
@@ -4359,6 +7730,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** 200 `{ "request": { "id": "...", "userId": "clxUser1", "kind": "OBSERVATION", "track": "DRIVER", "status": "IN_PROGRESS", ... } }`. 400 for missing/invalid `kind`/`userId`, disabled switch, or an already-open session (`{"error": "This member already has a <kind> session open"}`). 404 `{ "error": "User not found" }`. 500 on failure.
+
+---
 
 ### `GET /api/admin/supervision/settings`
 
@@ -4394,6 +7767,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/supervision/settings"
 }
 ```
 
+---
+
 ### `PATCH /api/admin/supervision/settings`
 
 **Why:** Edits the rulebook's thresholds — re-tuning the fail point bar, the required laps, or switching probation/observation off — without a deploy.
@@ -4410,24 +7785,7 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** 200 `{ "rules": { ...updated } }`. 400 `{ "error": "Invalid JSON body" }` or the field-specific validation error (e.g. `"traineeInstructorRoleId must be a Discord role id or empty"`). 500 on failure.
 
-### `POST /api/admin/terms/notify`
-
-**Why:** Sends a one-off "Terms of Service updated" email to every member with a known address, and records whether the terms text has actually changed since the last send so an accidental re-click doesn't spam everyone.
-
-**Auth:** `MANAGE_USERS` (`p.hasFlag("MANAGE_USERS")`).
-
-**Request:** JSON body:
-- `force` (boolean, optional) — send even if the computed hash of `terms*` strings in `src/locales/en.json` matches the last recorded hash.
-
-The route hashes (SHA-256) the sorted `key:value` pairs of every `en.json` key starting with `terms`, compares it against `data/terms-notified.json`'s `lastHash`, and refuses (unless `force`) if unchanged.
-
-```bash
-curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"force":false}' \
-  "$HSR_URL/api/admin/terms/notify"
-```
-
-**Response:** 200 `{ "message": "Sent terms update notification to 842 users" }`. 400 `{ "error": "No terms change detected" }` if the hash is unchanged and `force` was not set. Recipients are every `User` with a non-null `discordEmail`; each gets the `termsUpdated` template in their own `locale`. Writes `data/terms-notified.json` (`lastHash`, `lastNotifiedAt`, `lastNotifiedBy`) and an `ActivityLog` row (`TERMS_NOTIFY`).
+---
 
 ### `GET /api/admin/tickets/discord`
 
@@ -4472,6 +7830,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/tickets/discord?status=OPEN&page=1&l
 }
 ```
 
+---
+
 ### `GET /api/admin/tickets/discord/[id]`
 
 **Why:** Loads one Discord ticket's full transcript for the admin panel's ticket detail view.
@@ -4485,6 +7845,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/tickets/discord/clxTicket1"
 ```
 
 **Response:** 200 `{ "ticket": { "id": "...", "messages": [...], "user": {...}, "rating": {...} | null } }`. 404 `{ "error": "Not found" }`.
+
+---
 
 ### `PATCH /api/admin/tickets/discord/[id]`
 
@@ -4507,6 +7869,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** 200 `{ "ticket": { ...updated, "messages": [...], "user": {...}, "rating": {...} | null } }`. 400 `{ "error": "Already closed" }` / `{ "error": "Already open" }` / `{ "error": "Unknown action" }`. 404 `{ "error": "Not found" }`.
 
+---
+
 ### `DELETE /api/admin/tickets/discord/[id]`
 
 **Why:** Permanently removes a Discord ticket record from the admin panel (distinct from closing — this deletes the row entirely).
@@ -4521,6 +7885,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/tickets/discord/clxTicket1
 
 **Response:** 200 `{ "success": true }`. 404 `{ "error": "Not found" }`. Writes `TICKET_DELETED` to `ActivityLog`.
 
+---
+
 ### `GET /api/admin/tickets/discord/count`
 
 **Why:** The sidebar's open/unclaimed ticket badge. Deliberately its own lightweight endpoint — separate from the listing route, which also runs a paged query, a rating aggregate and a group-by — so a once-a-minute poll from every open admin tab stays cheap.
@@ -4534,178 +7900,6 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/tickets/discord/count"
 ```
 
 **Response:** 200 `{ "open": 5, "unclaimed": 2 }`.
-
-### `GET /api/admin/track-map`
-
-**Why:** Loads the track mapper's settings, aggregate stats and the list of drivers who have contributed traces, for the `/admin/track-map` page's control panel.
-
-**Auth:** `VIEW_PERF_MONITOR` (`requireTrackMapAccess()` → `permissions.canViewTrackMap()`, which is granted by the `VIEW_PERF_MONITOR` flag — the track mapper shares the perf-monitor population).
-
-**Request:** No params.
-
-```bash
-curl -sS -b cookies.txt "$HSR_URL/api/admin/track-map"
-```
-
-**Response:**
-```json
-{
-  "settings": {
-    "id": 1,
-    "enabled": true,
-    "cellSize": 8,
-    "minSpeed": 2,
-    "minMoveStuds": 4,
-    "retentionDays": 21,
-    "includeAllTeams": false,
-    "flipX": false,
-    "flipZ": false,
-    "rotationDeg": 0,
-    "studsPerKm": 1000,
-    "panX": 0,
-    "panY": 0
-  },
-  "stats": { "cellCount": 84213, "traceCount": 512, "pointCount": 210034, "maxHits": 9820, "lastSampleAt": "2026-09-13T09:40:00.000Z" },
-  "drivers": [{ "robloxId": "998877", "playerName": "somebody" }]
-}
-```
-
-### `PATCH /api/admin/track-map`
-
-**Why:** Edits the track mapper's calibration and behavior switches (`TrackMapSettings`, singleton id 1) — rotation, mirroring, studs-per-km, minimum-speed noise filter, etc. — stored rather than re-guessed each time the map is opened.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** JSON body, any subset of:
-- Booleans: `enabled`, `includeAllTeams`, `flipX`, `flipZ`.
-- Numbers, clamped to their limits: `cellSize` (0.5–64), `minSpeed` (0–200), `minMoveStuds` (0–200), `retentionDays` (0–365, rounded to integer), `rotationDeg` (-360–360), `studsPerKm` (0–1,000,000).
-
-```bash
-curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"rotationDeg":15,"includeAllTeams":false}' \
-  "$HSR_URL/api/admin/track-map"
-```
-
-**Response:** 200 `{ "settings": { ...updated } }`. 400 `{ "error": "Invalid body" }` or `{ "error": "Invalid value for <key>" }` or `{ "error": "Nothing to update" }` (empty patch).
-
-### `GET /api/admin/track-map/data`
-
-**Why:** The actual drawing data for the canvas: averaged track cells, driver traces (decimated point lists) and station pins — capped hard so one impatient click cannot pull the whole table.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** Query params, all optional:
-- `minHits` (number, default `1`, floored at `1`) — only cells with at least this many hits.
-- `traceLimit` (number, default `200`, capped at `600` / `MAX_TRACES`).
-- `pointsPerTrace` (number, default `2000`, clamped `50–4000`) — decimation target per trace.
-- `robloxId` (string) — filter traces to one driver.
-- `from` / `to` (ISO date strings) — time filter (`lastSeenAt` for cells, `endedAt` for traces).
-- `traces` (`"0"` disables trace inclusion).
-- `cells` (`"0"` disables cell inclusion).
-
-```bash
-curl -sS -b cookies.txt "$HSR_URL/api/admin/track-map/data?minHits=2&traceLimit=200&pointsPerTrace=2000"
-```
-
-**Response:** Cells are capped at **120,000** rows (`MAX_CELLS`), traces at **600** (`MAX_TRACES`), and the total decimated points across all traces at **400,000** (`MAX_TOTAL_POINTS`).
-```json
-{
-  "settings": { "id": 1, "enabled": true, "cellSize": 8, "rotationDeg": 0, "studsPerKm": 1000 },
-  "cells": { "x": [120.5], "z": [-30.2], "hits": [842], "avgSpeed": [22.4], "size": [8] },
-  "traces": [
-    { "id": "clxTrace1", "playerName": "somebody", "robloxId": "998877", "endedAt": "2026-09-13T09:40:00.000Z", "pts": [120.5, -30.2, 121.0, -29.8] }
-  ],
-  "stations": [{ "id": "clxMarker1", "stationId": "clxStation1", "name": "Budapest-Nyugati", "km": 0, "x": 0, "z": 0 }],
-  "truncated": { "cells": false, "traces": false }
-}
-```
-`truncated.cells` is `true` when the cell query hit `MAX_CELLS`; `truncated.traces` is `true` when the trace query returned at least `traceLimit` rows (and `traceLimit > 0`).
-
-### `POST /api/admin/track-map/purge`
-
-**Why:** The one irreversible button on the page — deletes accumulated track-map data. Each scope names exactly what it removes; nothing removes more than it names.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** JSON body:
-- `scope` (required): `"all"` | `"traces"` | `"noise"` | `"older"` | `"driver"`.
-- `minHits` (number, used only for `scope: "noise"`, default `2`, floored at `1`) — deletes cells with `hits < minHits`.
-- `olderThanDays` (number, used only for `scope: "older"`, default `7`, floored at `0`) — deletes traces with `endedAt` older than the cutoff.
-- `robloxId` (string, required for `scope: "driver"`) — deletes all traces for that driver.
-
-```bash
-curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"scope":"noise","minHits":2}' \
-  "$HSR_URL/api/admin/track-map/purge"
-```
-
-**Response varies by scope:**
-- `all`: `{ "deleted": { "cells": 84213, "traces": 512 } }` (deletes every `TrackMapCell` and `TrackMapTrace`).
-- `traces`: `{ "deleted": { "traces": 512 } }`.
-- `noise`: `{ "deleted": { "cells": 1200 } }`.
-- `older`: `{ "deleted": { "traces": 80 } }`.
-- `driver`: `{ "deleted": { "traces": 12 } }`.
-
-400 `{ "error": "Missing robloxId" }` (scope `driver` with no id) or `{ "error": "Unknown scope" }`. Every purge writes an `ActivityLog` row (`TRACK_MAP_PURGED`) describing what was removed.
-
-### `GET /api/admin/track-map/stations`
-
-**Why:** Loads every `Station` alongside its hand-marked pin position (if any) plus free-text custom markers (yards, junctions with no `Station` row) — the data behind the mapper's "click to mark a station" tool.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** No params.
-
-```bash
-curl -sS -b cookies.txt "$HSR_URL/api/admin/track-map/stations"
-```
-
-**Response:**
-```json
-{
-  "stations": [
-    { "id": "clxStation1", "name": "Budapest-Nyugati", "km": 0, "order": 1, "marker": { "id": "clxMarker1", "x": 10.5, "z": -4.2 } },
-    { "id": "clxStation2", "name": "Kelenföld", "km": 8, "order": 2, "marker": null }
-  ],
-  "customMarkers": [{ "id": "clxMarker2", "label": "Ferencváros yard", "x": 40.1, "z": 12.0 }]
-}
-```
-
-### `POST /api/admin/track-map/stations`
-
-**Why:** Marks (or moves) where a `Station` sits on the drawn map, or drops a free-text pin for a yard/junction with no `Station` row. Re-marking a station moves its pin instead of stacking a second one.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** JSON body:
-- `x`, `z` (numbers, required, must be finite).
-- `stationId` (string, optional) — links the marker to a `Station`; upserts by `stationId` (one marker per station).
-- `label` (string, optional, truncated to 80 chars) — used instead of `stationId` for a free-text pin.
-- Either `stationId` or `label` is required.
-
-```bash
-curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"stationId":"clxStation1","x":10.5,"z":-4.2}' \
-  "$HSR_URL/api/admin/track-map/stations"
-```
-
-**Response:** 200 `{ "marker": { "id": "clxMarker1", "stationId": "clxStation1", "x": 10.5, "z": -4.2 } }`. 400 `{ "error": "Invalid coordinates" }` or `{ "error": "A station or a label is required" }`. 404 `{ "error": "Unknown station" }` if `stationId` does not exist.
-
-### `DELETE /api/admin/track-map/stations`
-
-**Why:** Removes a station marker or a custom pin from the map.
-
-**Auth:** `VIEW_PERF_MONITOR`.
-
-**Request:** Query params (one required):
-- `id` — the marker's own id.
-- `stationId` — deletes whatever marker is attached to that station.
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/track-map/stations?id=clxMarker1"
-```
-
-**Response:** 200 `{ "ok": true }`. 400 `{ "error": "Missing id" }` if neither `id` nor `stationId` is given.
 
 ## Admin: Training Programmes & Content, Trains
 
@@ -4748,6 +7942,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/trains"
 ]
 ```
 
+---
+
 ### `POST /api/admin/trains`
 
 **Why:** Creates a train row for the timetable — a service that can then be given stops, a pair group and a place in duty booking.
@@ -4763,6 +7959,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `201` with the created `Train` row (same shape as the GET list items, minus `stops`). `400` if `trainNumber`/`trainType`/`direction`/`order` are missing. `500` on failure.
+
+---
 
 ### `PUT /api/admin/trains`
 
@@ -4780,6 +7978,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** Updated `Train` row. `400` if `id` missing. `500` on failure (e.g. unknown id).
 
+---
+
 ### `DELETE /api/admin/trains`
 
 **Why:** Removes a train row entirely — for a service that never should have existed rather than one being retired (retiring is `PATCH action: "set-active"`).
@@ -4793,6 +7993,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/trains?id=cktr123"
 ```
 
 **Response:** `{ "success": true }`. `400` if `id` missing. `500` on failure.
+
+---
 
 ### `PATCH /api/admin/trains`
 
@@ -4816,6 +8018,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** Reorder: `{ "success": true }`, writes `order: 0..n-1` in the array's order inside one transaction. Set-active: the updated `Train` row. `400` for a bad `direction`, a non-array/non-string `ids`, or an `ids` array that doesn't list every train of the direction exactly once; `400` for `"Unknown action"` on anything else; `500` on failure.
 
+---
+
 ### `PUT /api/admin/training/reorder`
 
 **Why:** Drag-and-drop reordering for the training material editor's module and section lists. A section carrying `moduleId` in its item is how dragging a section across modules is expressed — the same write as a plain reorder, just landing in a different parent list, so a cross-module move and an in-place reorder don't need two endpoints.
@@ -4831,6 +8035,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "ok": true }`. `400` if `items` is not an array or `type` is not `"modules"`/`"sections"`.
+
+---
 
 ### `GET /api/admin/training/trainees`
 
@@ -4887,6 +8093,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/training/trainees"
 }
 ```
 
+---
+
 ### `GET /api/admin/training/terminations`
 
 **Why:** The review queue for `/admin/trainings` → Trainees' removal history. Only shows terminations still inside the retention window and not yet revoked — the same cutoff the revoke route enforces and the purge cron uses, so the page never offers a row that revoke would then refuse.
@@ -4926,6 +8134,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/training/terminations"
   "reapplyCooldownDays": 7
 }
 ```
+
+---
 
 ### `GET /api/admin/training/programs`
 
@@ -4973,6 +8183,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/training/programs"
 }
 ```
 
+---
+
 ### `POST /api/admin/training/programs`
 
 **Why:** Creates a new career path (a `TrainingProgram` row) — what used to require a schema change and a deploy is now a form submission. The `key` is permanent: every `branch`/`track`/`applicationFormType` column across the schema stores it, so it is normalized once at creation and never editable afterwards.
@@ -4988,6 +8200,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `{ "program": { "key": "TICKET_INSPECTOR", "name": "Ticket Inspector", ... } }`. `400` if `name` is empty or the derived `key` contains no letter/digit. `409` if a programme with that key already exists.
+
+---
 
 ### `PATCH /api/admin/training/programs/[key]`
 
@@ -5005,6 +8219,8 @@ curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `{ "program": { ...updated row... } }`. `404` if the programme key doesn't resolve. `409` specifically when `traineeRoleId` is being cleared (set to `null`) on a programme that still has active enrollments — the response names the enrollment count and says to pick a different rank or disable the programme first instead.
 
+---
+
 ### `DELETE /api/admin/training/programs/[key]`
 
 **Why:** Deleting a programme with any history would orphan every row that stores its key as plain text (training progress, supervision records, exam rows) — those rows resolve to nothing and the trainees behind them become invisible with unreachable progress. Switching a programme off does everything a delete is usually wanted for while keeping the history readable.
@@ -5018,6 +8234,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/training/programs/TICKET_I
 ```
 
 **Response:** `{ "success": true }`. `404` if the programme doesn't exist. `409` — **refuses to delete a programme key with history** — if `trainingProgramUsage(key)` reports any nonzero count (enrollments, progress rows, exam attempts, etc.); the error names each blocking count and points at switching the programme off instead, and returns the `usage` object.
+
+---
 
 ### `GET /api/admin/training/exam-votes`
 
@@ -5078,6 +8296,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/training/exam-votes?date=2026-09-12"
 }
 ```
 
+---
+
 ### `GET /api/admin/training/modules`
 
 **Why:** Loads one branch's whole training material tree (modules → sections → blocks) for the content editor.
@@ -5113,6 +8333,8 @@ curl -sS -b cookies.txt "$HSR_URL/api/admin/training/modules?branch=DISPATCHER"
 ]
 ```
 
+---
+
 ### `POST /api/admin/training/modules`
 
 **Why:** Creates a new module (a top-level chapter) for a programme's training material.
@@ -5129,6 +8351,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `201` with the created `TrainingModule` row. `400` if `title` is empty.
 
+---
+
 ### `POST /api/admin/training/upload`
 
 **Why:** Uploads an image or short video for a training material block to Cloudflare R2, returning the public URL to embed.
@@ -5143,6 +8367,8 @@ curl -sS -X POST -b cookies.txt -F "file=@brake-test.png" \
 ```
 
 **Response:** `{ "url": "https://s3.hsrgames.hu/training-images/<uuid>.png", "type": "image" }`. `500` if R2 is not configured. `400` if no file or an unsupported type.
+
+---
 
 ### `PUT /api/admin/training/blocks/[id]`
 
@@ -5160,6 +8386,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** Updated `TrainingSectionBlock` row. `400` if `images` has more than 5 entries.
 
+---
+
 ### `DELETE /api/admin/training/blocks/[id]`
 
 **Why:** Deletes a content block and any R2 files (images/video) it referenced.
@@ -5173,6 +8401,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/training/blocks/ckblk1"
 ```
 
 **Response:** `{ "ok": true }`.
+
+---
 
 ### `PUT /api/admin/training/sections/[id]`
 
@@ -5190,6 +8420,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** Updated `TrainingSection` row with its `blocks`. `400` if `title` is empty.
 
+---
+
 ### `DELETE /api/admin/training/sections/[id]`
 
 **Why:** Deletes a section and every image/video its blocks referenced in R2.
@@ -5203,6 +8435,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/training/sections/cksec1"
 ```
 
 **Response:** `{ "ok": true }`.
+
+---
 
 ### `POST /api/admin/training/sections/[id]/blocks`
 
@@ -5220,6 +8454,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `201` with the created `TrainingSectionBlock` row (`order` = last block's order in the section + 1). `400` if `images` has more than 5 entries.
 
+---
+
 ### `PUT /api/admin/training/modules/[id]`
 
 **Why:** Renames a module and/or moves it to another programme's branch. Moving carries the sections and blocks with it (they hang off the module) but re-derives `order` (appended to the end of the target branch's list) since the old position would otherwise collide with whatever already occupies it there.
@@ -5236,6 +8472,8 @@ curl -sS -X PUT -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** Updated `TrainingModule` row. `400` for an unrecognized `branch` value, an empty `title`, or if neither field results in any data to update. `404` if the module doesn't exist (only checked when a branch move is requested).
 
+---
+
 ### `DELETE /api/admin/training/modules/[id]`
 
 **Why:** Deletes a module and, cascading through Prisma relations, its sections and blocks; cleans up R2 files that are no longer referenced by anything else afterward — deliberately deferred until after the delete, since a duplicated module shares its original's media URLs and deleting the copy must not delete the original's files.
@@ -5249,6 +8487,8 @@ curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/training/modules/ckmod1"
 ```
 
 **Response:** `{ "ok": true }`.
+
+---
 
 ### `POST /api/admin/training/modules/[id]/duplicate`
 
@@ -5266,6 +8506,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 
 **Response:** `201` with the newly created `TrainingModule` row (sections/blocks copied inside one transaction — a module that ended up with only half its sections would look like a finished copy). `404` if the source module doesn't exist. `400` for an unrecognized `branch`.
 
+---
+
 ### `POST /api/admin/training/modules/[id]/sections`
 
 **Why:** Appends a new section to the end of a module, optionally marking it as the branch's completion gate (which, like the sibling section-level route, clears any other section in the same branch previously holding that flag).
@@ -5281,6 +8523,8 @@ curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
 ```
 
 **Response:** `201` with the created `TrainingSection` row including `blocks` (empty array). `400` if `title` is empty.
+
+---
 
 ### `POST /api/admin/training/terminations/[id]/revoke`
 
@@ -5785,70 +9029,6 @@ Errors: `500` "R2 storage not configured", `404` "Chip not found", `400` "No fil
 
 ---
 
-### `POST /api/admin/wagon-pool/assignments`
-
-**Why:** Drop event — appends a wagon chip onto the end of a train pair's fixed consist sequence. Always creates a new position rather than upserting, because the same wagon type may legitimately repeat within one consist.
-
-**Auth:** `MANAGE_LOCOMOTIVE_POOL`.
-
-**Request:** JSON body: `pairGroup` (string, required, trimmed non-empty — the `Train.pairGroup` identifier), `wagonId` (string, required — a `WagonChip` id).
-
-```bash
-curl -sS -X POST -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"pairGroup":"IC-101/102","wagonId":"wc_1"}' \
-  "$HSR_URL/api/admin/wagon-pool/assignments"
-```
-
-**Response (`201`):**
-```json
-{ "id": "pwa_1", "pairGroup": "IC-101/102", "wagonId": "wc_1", "order": 3 }
-```
-Errors: `400` "pairGroup and wagonId are required", `404` "Chip not found", `500` on failure. Writes `WAGON_ASSIGNMENT_CREATED` to `ActivityLog`.
-
----
-
-### `PATCH /api/admin/wagon-pool/assignments`
-
-**Why:** Reorders the fixed consist sequence for a pair — `order` on each `PairWagonAssignment` row *is* the expected wagon position, so this is how a drag-and-drop reorder in the admin UI is persisted.
-
-**Auth:** `MANAGE_LOCOMOTIVE_POOL`.
-
-**Request:** JSON body: `pairGroup` (string, required, trimmed non-empty), `orderedAssignmentIds` (array of strings, required non-empty — the assignment ids in their new order; written in one transaction as `order = index`).
-
-```bash
-curl -sS -X PATCH -b cookies.txt -H "Content-Type: application/json" \
-  -d '{"pairGroup":"IC-101/102","orderedAssignmentIds":["pwa_3","pwa_1","pwa_2"]}' \
-  "$HSR_URL/api/admin/wagon-pool/assignments"
-```
-
-**Response:**
-```json
-{ "success": true }
-```
-Errors: `400` "pairGroup and orderedAssignmentIds are required", `500` on failure.
-
----
-
-### `DELETE /api/admin/wagon-pool/assignments/[id]`
-
-**Why:** Removes a single wagon-to-pair assignment (not the chip itself) and closes the resulting gap in the ordering so the remaining positions stay a contiguous `0..n-1` sequence.
-
-**Auth:** `MANAGE_LOCOMOTIVE_POOL`.
-
-**Request:** Path param `id` (assignment id). No body.
-
-```bash
-curl -sS -X DELETE -b cookies.txt "$HSR_URL/api/admin/wagon-pool/assignments/pwa_1"
-```
-
-**Response:**
-```json
-{ "success": true }
-```
-Errors: `500` on failure (including not-found, since `prisma.delete` throws). Writes `WAGON_ASSIGNMENT_DELETED` to `ActivityLog`.
-
----
-
 ### `GET /api/admin/type-trainings`
 
 **Why:** Lists every locomotive type training session (with registration counts) for the `/admin/trainings` type-training tab.
@@ -6028,9 +9208,736 @@ curl -sS -X POST -b cookies.txt "$HSR_URL/api/admin/type-trainings/tt_1/close"
 ```
 Errors: `404` "Not found", `400` "Training is not open" (already closed). Writes `TYPE_TRAINING_CLOSED` to `ActivityLog`. Role grants to attendees without a `discordId` are skipped (filtered out before the grant loop).
 
-## Cron Jobs
+## Admin: Forum
 
-All routes below require the `CRON_API_KEY` (or, for one legacy route, `CRON_SECRET`) shared secret and are meant to be called only by the server's own cron scheduler (`scripts/crontab.txt`), never by a browser or a mobile/game client. They are listed in the same order as the "Cron Jobs" table in `CLAUDE.md`.
+Every endpoint here needs a session and the `MANAGE_FORUM` flag (`canManageForum()`); otherwise `401`/`403`. Changes are written to the activity log.
+
+### `GET /api/admin/forum/reports`
+
+**Why:** The moderation queue: reported posts, with every report against each post grouped under it, oldest first.
+
+**Request:** Query `status` (`OPEN` | `RESOLVED` | `REJECTED`, default `OPEN`). At most 50 reports per call.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/reports?status=OPEN"
+```
+
+**Response:**
+```json
+{
+  "status": "OPEN",
+  "groups": [{
+    "post": { "id": "clp...", "body": "…", "createdAt": "…", "deletedAt": null, "likeCount": 2, "replyCount": 0, "author": { "id": "...", "displayName": "..." }, "media": [] },
+    "reports": [{ "id": "...", "reason": "SPAM", "note": null, "createdAt": "…", "reporter": { "id": "...", "displayName": "..." }, "handledBy": null, "handledAt": null, "resolution": null }]
+  }]
+}
+```
+
+---
+
+### `POST /api/admin/forum/reports/[postId]`
+
+**Why:** Decide every open report on a post at once: remove the post (`delete`) or keep it (`keep`).
+
+**Request:** JSON body `{ "action": "delete" | "keep", "resolution": "optional note, max 1000 chars" }`. Anything but `delete` is treated as `keep`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"delete","resolution":"Spam"}' "$HSR_URL/api/admin/forum/reports/clp1234567890"
+```
+
+**Response:** `{ "ok": true, "closed": 3 }` — the open reports are closed as `RESOLVED` (delete) or `REJECTED` (keep). `404 forumPostMissing`.
+
+---
+
+### `GET /api/admin/forum/topics`
+
+**Why:** All topics, enabled or not, with their post counts.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/topics"
+```
+
+**Response:** `{ "topics": [{ "id", "key", "name", "nameEn", "color", "emoji", "sortOrder", "enabled", "_count": { "posts": 14 } }] }`.
+
+---
+
+### `POST /api/admin/forum/topics`
+
+**Why:** Create a topic, or update one when `id` is given.
+
+**Request:** JSON body — `id` (to update), `key` (optional on create; derived from `name` otherwise, `a-z0-9-` only), `name` (required, max 60), `nameEn`, `color` (`#rrggbb`), `emoji`, `sortOrder` (integer), `enabled` (default `true`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"GYSEV","color":"#22c55e"}' "$HSR_URL/api/admin/forum/topics"
+```
+
+**Response:** `201 { "topic": {…} }` on create, `{ "topic": {…} }` on update. `400 forumTopicInvalid`, `409 forumTopicDuplicate` (the key exists).
+
+---
+
+### `DELETE /api/admin/forum/topics`
+
+**Why:** Delete a topic. Posts keep existing; they just lose the tag.
+
+**Request:** Query `id`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/topics?id=clt1234567890"
+```
+
+**Response:** `{ "ok": true }`. `400 forumTopicInvalid` (no id), `404 forumTopicMissing`.
+
+---
+
+### `GET /api/admin/forum/role-badges`
+
+**Why:** Every Discord role with the rank badge (if any) shown next to its holders' names on the forum, plus badges whose role no longer exists.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/role-badges"
+```
+
+**Response:** `{ "roles": [{ "roleId", "name", "color", "position", "isRank", "badge": { "id", "name", "nameEn", "emoji", "color", "imageUrl", "priority", "displayMode", "enabled" } | null }], "orphaned": [ … ] }`.
+
+---
+
+### `POST /api/admin/forum/role-badges`
+
+**Why:** Create or update the badge of one Discord role (one badge per role).
+
+**Request:** JSON body — `discordRoleId` (required), `name` (required, max 60), `nameEn`, `emoji`, `color` (`#rrggbb`), `priority` (higher wins where only one badge fits), `displayMode` (`PRIMARY` | `ALWAYS` | `HIDDEN`, default `PRIMARY`), `enabled`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"discordRoleId":"123456789012345678","name":"Mozdonyvezető","emoji":"🚆","priority":10}' \
+  "$HSR_URL/api/admin/forum/role-badges"
+```
+
+**Response:** `{ "badge": {…} }`. `400 forumBadgeInvalid`, `404 forumBadgeRoleMissing`.
+
+---
+
+### `DELETE /api/admin/forum/role-badges/[id]`
+
+**Why:** Remove a badge and its artwork.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/role-badges/clb1234567890"
+```
+
+**Response:** `{ "ok": true }`. `404 forumBadgeMissing`.
+
+---
+
+### `POST /api/admin/forum/role-badges/[id]/image`
+
+**Why:** Upload the badge's artwork (replaces the previous image).
+
+**Request:** `multipart/form-data` with `file` — PNG, WebP, JPEG, GIF or SVG, at most 1 MB.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -F "file=@badge.png" \
+  "$HSR_URL/api/admin/forum/role-badges/clb1234567890/image"
+```
+
+**Response:** `{ "imageUrl": "https://s3.hsrgames.hu/role-badges/…" }`. `400 forumBadgeNoFile | forumBadgeImageType | forumBadgeImageTooLarge`, `404 forumBadgeMissing`, `503 forumStorageUnavailable`.
+
+---
+
+### `DELETE /api/admin/forum/role-badges/[id]/image`
+
+**Why:** Remove the artwork; the badge falls back to its emoji/colour.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/role-badges/clb1234567890/image"
+```
+
+**Response:** `{ "ok": true }`. `404 forumBadgeMissing`.
+
+---
+
+### `GET /api/admin/forum/official-channels`
+
+**Why:** Where each kind of official HSR forum post is also announced on Discord (channel + role to ping), with the guild's channels and roles to pick from.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/forum/official-channels"
+```
+
+**Response:** `{ "routes": [{ "type": "UPDATE", "channelId": "…" | null, "roleId": "…" | null, "enabled": true }], "channels": [ … ] | null, "categories": { … }, "roles": [{ "id", "name" }] }`.
+
+---
+
+### `PUT /api/admin/forum/official-channels`
+
+**Why:** Set the Discord channel and ping role for one official post type.
+
+**Request:** JSON body — `type` (`UPDATE` | `DEVELOPMENT` | `NOTICE` | `EVENT` | `MAINTENANCE`, required), `channelId` and `roleId` (Discord snowflakes or `null`), `enabled` (default `true`).
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"UPDATE","channelId":"123456789012345678","roleId":null,"enabled":true}' \
+  "$HSR_URL/api/admin/forum/official-channels"
+```
+
+**Response:** `{ "ok": true }`. `400 { "error": "Invalid type" }` / `{ "error": "Invalid id" }`.
+
+## Admin: Timetable and Pool Drafts
+
+The timetable editor and the locomotive/wagon pool editor keep **per-admin drafts**: changes are saved as you type and only reach the live timetable/pool when published. Each draft entry remembers the live state it was edited from (`baseline`), so publishing over somebody else's newer change is reported as a `CONFLICT` instead of silently overwriting it.
+
+### `GET /api/admin/schedule/draft`
+
+**Why:** The caller's own timetable draft.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS` flag.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/schedule/draft"
+```
+
+**Response:**
+```json
+{ "draft": { "version": 1, "trains": { "<trainId>": { "trainId": "...", "trainNumber": "1234", "direction": 0, "stops": [{ "stationId": "...", "stationName": "Budapest-Keleti", "row": { "arrivalTime": "", "departureTime": "08:15", "passes": false, "note": "" } }], "baseline": "…", "updatedAt": "2026-10-16T08:00:00.000Z" } } } }
+```
+
+---
+
+### `PUT /api/admin/schedule/draft`
+
+**Why:** Save one train column into the draft (autosave).
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`.
+
+**Request:** JSON body `{ "train": { "trainId", "trainNumber", "direction", "stops": [ … ], "baseline" } }` — `trainId` and `stops` are required.
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"train":{"trainId":"clt123","trainNumber":"1234","direction":0,"stops":[],"baseline":null}}' \
+  "$HSR_URL/api/admin/schedule/draft"
+```
+
+**Response:** `{ "draft": {…}, "savedAt": "2026-10-16T08:00:00.000Z" }`. `400 { "error": "A train column is required" }`.
+
+---
+
+### `DELETE /api/admin/schedule/draft`
+
+**Why:** Drop one train from the draft (`?trainId=`), or discard the whole draft (no query).
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/schedule/draft?trainId=clt123"
+```
+
+**Response:** `{ "draft": {…} }` — what is left.
+
+---
+
+### `POST /api/admin/schedule/draft/publish`
+
+**Why:** Make draft columns live.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`. Logged as `SCHEDULE_DRAFT_PUBLISHED`.
+
+**Request:** JSON body — `trainIds` (optional; default: every train in the draft), `force` (boolean; publish over a conflict).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"trainIds":["clt123"]}' "$HSR_URL/api/admin/schedule/draft/publish"
+```
+
+**Response:** `{ "results": [{ "trainId": "clt123", "trainNumber": "1234", "status": "PUBLISHED" | "CONFLICT" | "MISSING", "detail": "…" }], "draft": {…} }` — published trains leave the draft; conflicting ones stay. `400` when the draft is empty.
+
+---
+
+### `GET /api/admin/schedule/draft/export`
+
+**Why:** Download the live timetable together with the caller's draft as one JSON file, to back it up or move it to another environment.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`.
+
+```bash
+curl -sS -OJ -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/schedule/draft/export"
+```
+
+**Response:** A JSON file download (`Content-Disposition: attachment`) — `{ "timetable": {…}, "draft": {…} | null }`.
+
+---
+
+### `POST /api/admin/schedule/draft/import`
+
+**Why:** Load an exported file into the caller's draft. Trains and stations are matched by id, then by train number + direction / station name, so a file from another environment still lines up.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`. Logged as `SCHEDULE_DRAFT_IMPORTED`.
+
+**Request:** JSON body — the exported file (or `{ "draft": <file> }`), plus `mode` (`merge` | `replace`, default `merge`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d @timetable-draft.json "$HSR_URL/api/admin/schedule/draft/import"
+```
+
+**Response:** `{ "draft": {…}, "imported": ["1234"], "skippedTrains": ["9999"], "skippedStations": ["1234: Ismeretlen állomás"] }`. `400` when the file is not a timetable draft (or comes from a newer editor version).
+
+---
+
+### `GET /api/admin/pool-draft`
+
+**Why:** The caller's draft of locomotive and wagon pool arrangements (which chips belong to which train pair group).
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/pool-draft"
+```
+
+**Response:** `{ "draft": { "version": 1, "locomotive": { "<pairGroup>": { "pairGroup", "chipIds": [], "baseline", "updatedAt" } }, "wagon": { … } } }`. Locomotive chip ids are candidates the game draws from; wagon chip ids are the consist itself, in order, and may repeat.
+
+---
+
+### `PUT /api/admin/pool-draft`
+
+**Why:** Save one pair group's arrangement into the draft.
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`.
+
+**Request:** JSON body `{ "kind": "locomotive" | "wagon", "pairGroup": "IC-1", "chipIds": ["…"], "baseline": "…" | null }`.
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"wagon","pairGroup":"IC-1","chipIds":["chip1","chip1","chip2"]}' "$HSR_URL/api/admin/pool-draft"
+```
+
+**Response:** `{ "draft": {…}, "savedAt": "…" }`. `400` when `kind`, `pairGroup` or `chipIds` is missing.
+
+---
+
+### `DELETE /api/admin/pool-draft`
+
+**Why:** Drop one pair group (`?kind=…&pairGroup=…`) or discard the whole pool draft (no query).
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/pool-draft?kind=wagon&pairGroup=IC-1"
+```
+
+**Response:** `{ "draft": {…} }`.
+
+---
+
+### `POST /api/admin/pool-draft/publish`
+
+**Why:** Make draft pool arrangements live.
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`. Logged as `POOL_DRAFT_PUBLISHED`.
+
+**Request:** JSON body — `targets` (optional `[{ "kind", "pairGroup" }]`; default: everything in the draft), `force` (publish over a conflict).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" -d '{}' \
+  "$HSR_URL/api/admin/pool-draft/publish"
+```
+
+**Response:** `{ "results": [{ "kind", "pairGroup", "status": "PUBLISHED" | "CONFLICT" | "SKIPPED", "detail" }], "draft": {…} }`. `400` when the draft is empty.
+
+## Admin: Discord Messages
+
+Both groups need a session and the `MANAGE_EMBED_BUILDER` flag (`canUseEmbedBuilder()`).
+
+### `GET /api/admin/discord/message`
+
+**Why:** Load a message the bot posted earlier into the embed builder, to edit it. Only the bot's own messages can be edited.
+
+**Request:** Query `ref` (a Discord message link, or a bare message id) and `channelId` (required when `ref` is a bare id).
+
+```bash
+curl -sS --get -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "ref=https://discord.com/channels/1/2/3" "$HSR_URL/api/admin/discord/message"
+```
+
+**Response:** `{ "channelId", "messageId", "content", "embed": {…}, "warnings": ["…"] }` — warnings say when saving would drop extra embeds or buttons. Errors: `400` (bad reference, or not the bot's message), `404` (no such message, or the bot cannot see the channel), `502` (Discord unreachable).
+
+---
+
+### `PATCH /api/admin/discord/message`
+
+**Why:** Save the edited embed back onto the bot's message.
+
+**Request:** JSON body `{ "channelId", "messageId", "content", "embed": { … } }` — the embed is validated against Discord's limits.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"channelId":"2","messageId":"3","content":"","embed":{"title":"Menetrend","description":"…"}}' \
+  "$HSR_URL/api/admin/discord/message"
+```
+
+**Response:** `{ "success": true, "messageId", "channelId" }`. Logged as `DISCORD_EMBED_EDITED`.
+
+---
+
+### `GET /api/admin/discord/scheduled`
+
+**Why:** Embeds scheduled to be posted later (up to 100, pending first).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/discord/scheduled"
+```
+
+**Response:** `{ "rows": [{ "id", "channelId", "content", "embed", "scheduledAt", "status": "PENDING" | "SENDING" | "SENT" | "FAILED" | "CANCELLED", "attempts", "sentAt", "sentMessageId", "failedAt", "lastError", "cancelledAt", "createdAt", "createdByName" }] }`.
+
+---
+
+### `POST /api/admin/discord/scheduled`
+
+**Why:** Schedule an embed for a channel at a future time (at most 365 days ahead). `POST /api/cron/discord-scheduled` posts it when due.
+
+**Request:** JSON body `{ "channelId", "content", "embed": { … }, "scheduledAt": "2026-10-20T18:00:00.000Z" }`.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"channelId":"2","embed":{"title":"Esti forgalom"},"scheduledAt":"2026-10-20T18:00:00.000Z"}' \
+  "$HSR_URL/api/admin/discord/scheduled"
+```
+
+**Response:** `{ "success": true, "id": "…" }`. `400` for a missing channel/embed, an invalid embed, or a time in the past / too far ahead.
+
+---
+
+### `PUT /api/admin/discord/scheduled`
+
+**Why:** Run the scheduled-message sender now instead of waiting for the next cron tick.
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/discord/scheduled"
+```
+
+**Response:** `{ "success": true }`.
+
+---
+
+### `PATCH /api/admin/discord/scheduled/[id]`
+
+**Why:** Change a scheduled message's channel, text, embed or time. Editing a `FAILED` or `CANCELLED` one puts it back to `PENDING`.
+
+**Request:** JSON body with any of `channelId`, `content`, `embed`, `scheduledAt`.
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"scheduledAt":"2026-10-21T18:00:00.000Z"}' "$HSR_URL/api/admin/discord/scheduled/cls123"
+```
+
+**Response:** `{ "success": true }`. `400` nothing to change / invalid values, `404` unknown id, `409` already sent or being sent.
+
+---
+
+### `DELETE /api/admin/discord/scheduled/[id]`
+
+**Why:** Cancel a pending or failed scheduled message.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/discord/scheduled/cls123"
+```
+
+**Response:** `{ "success": true }`. `404` unknown id, `409` already sent or being sent.
+
+## Admin: Activity Log, Delays, Reports and Tools
+
+### `GET /api/admin/activity`
+
+**Why:** The activity log — every admin action, sign-in, ban and notable member action — filterable and paged.
+
+**Auth:** Session or bearer, `VIEW_ACTIVITY_LOG`.
+
+**Request:** Query `page` (default 1, 50 per page), `action` (exact action name, or `all`), `user` (matches name, display name, Roblox id, Discord username/id or user id), `q` (substring of the details), `from` / `to` (`YYYY-MM-DD`, inclusive, UTC).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$HSR_URL/api/admin/activity?action=LEGAL_ACCEPT&from=2026-10-01&page=1"
+```
+
+**Response:** `{ "activities": [{ "id", "userId", "action", "details", "createdAt", "user": {…} }], "pagination": { "page": 1, "perPage": 50, "total": 120, "totalPages": 3 } }`.
+
+---
+
+### `GET /api/admin/activity/stream`
+
+**Why:** The live view of the activity log (server-sent events).
+
+**Auth:** Session, `VIEW_ACTIVITY_LOG`.
+
+**Request:** Query `action`, `user` — the same filters as the list.
+
+```bash
+curl -sS -N -b cookies.txt "$HSR_URL/api/admin/activity/stream?action=all"
+```
+
+**Response:** `text/event-stream`. The first message is `{ "type": "initial", "activities": [ …latest 50… ] }`; then every 5 seconds, if anything new arrived, `{ "type": "new", "activities": [ … ] }` (oldest first). Heartbeat comment every 30 seconds.
+
+---
+
+### `GET /api/admin/delay-settings`
+
+**Why:** The thresholds of the automatic delay detection, and the Discord channel delays are announced in.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/delay-settings"
+```
+
+**Response:** `{ "enabled": true, "lateThresholdMinutes": 3, "earlyThresholdMinutes": 1, "discordChannelId": "123…" | null }` (the defaults shown here apply until someone saves the settings).
+
+---
+
+### `PUT /api/admin/delay-settings`
+
+**Why:** Change the delay detection settings.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`. Logged as `DELAY_SETTINGS_UPDATED`.
+
+**Request:** JSON body — `enabled` (default `true`), `lateThresholdMinutes` and `earlyThresholdMinutes` (whole minutes, 1–120, required), `discordChannelId` (snowflake or empty for none).
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"enabled":true,"lateThresholdMinutes":5,"earlyThresholdMinutes":3,"discordChannelId":""}' \
+  "$HSR_URL/api/admin/delay-settings"
+```
+
+**Response:** The saved settings (same shape as `GET`). `400` for an out-of-range threshold or a malformed channel id.
+
+---
+
+### `GET /api/admin/exams/[id]/question-stats`
+
+**Why:** How each question of an exam performs — correct/incorrect/pending/skipped counts and the correct rate — with questions flagged as too easy or too hard once enough answers are in.
+
+**Auth:** Exam section access (`requireExamAccess`): `MANAGE_EXAMS` for any exam, `MANAGE_APPLICATION_FORMS` for application forms only (others answer `404`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/exams/cle123/question-stats"
+```
+
+**Response:** `{ "questions": [{ "questionId", "order", "type", "questionText", "points", "decided", "correct", "incorrect", "pending", "skipped", "correctRate": 0.82 | null, "flag": "TOO_EASY" | "TOO_HARD" | null }] }`.
+
+---
+
+### `GET /api/admin/instructors/performance`
+
+**Why:** How each instructor marks compared with everybody else: sessions, pass/fail, pass rate, distinct trainees, average fault points, and a `LENIENT` / `STRICT` / `TYPICAL` verdict once they have enough sessions.
+
+**Auth:** Session or bearer, `MANAGE_INSTRUCTORS`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/instructors/performance"
+```
+
+**Response:** `{ "windowDays": 90, "cohortPassRate": 0.71, "cohortSessions": 140, "instructors": [{ "userId", "name", "image", "sessions", "passed", "failed", "passRate", "trainees", "averageFaultPoints", "lastSessionAt", "comparison" }] }`.
+
+---
+
+### `GET /api/admin/permissions/users/[userId]/debug`
+
+**Why:** "Why can (or can't) this member do X?" — their rank, every permission flag with where it comes from (role, override, removed by a suspension), and the admin and dashboard menu items they would see.
+
+**Auth:** Session or bearer, `MANAGE_PERMISSIONS`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/permissions/users/clu123/debug"
+```
+
+**Response:**
+```json
+{
+  "user": { "id", "name", "image", "banned", "legacyRole" },
+  "rank": { "name", "priority", "category", "anchors", "cachedName" },
+  "flags": { "all": [{ "flag": "CAN_DRIVE", "fromRole": true, "held": true, "override": null, "removedBySuspension": false }] },
+  "suspensions": [{ "scope", "reason", "expiresAt" }],
+  "overrides": [{ "flag", "type": "GRANT" | "REVOKE", "reason" }],
+  "wouldSee": { "admin": [{ "section", "items": [{ "href", "label" }] }], "dashboard": ["/dashboard/duty"] }
+}
+```
+`404 { "error": "User not found" }`.
+
+---
+
+### `GET /api/admin/stations/my-position`
+
+**Why:** The caller's live in-game position, so a station can be placed on the map by standing at it.
+
+**Auth:** Session or bearer, `MANAGE_TRAINS`. The caller must be in the game (in a train) right now.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/stations/my-position"
+```
+
+**Response:** `{ "x": 1234, "z": -567 }`. `404` when there is no live position for the caller.
+
+---
+
+### `GET /api/admin/statistics/invites`
+
+**Why:** Who brought new members to the Discord server, and how reliably joins could be attributed to an invite.
+
+**Auth:** Session or bearer, `VIEW_STATISTICS`.
+
+**Request:** Query `days` (`30` | `90` | `365`, default `90`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/statistics/invites?days=30"
+```
+
+**Response:** `{ "days": 30, "inviters": [{ "inviterId", "inviterUsername", "joins" }], "breakdown": [{ "method": "DIFF" | "CONSUMED" | …, "count" }], "total": 40, "attributed": 31, "confidence": 78 }`. `400` when no guild is configured.
+
+---
+
+### `GET /api/admin/tickets/discord/sla`
+
+**Why:** Support response times over the last 30 days: tickets, answered/unanswered, median first response and median resolution, overall and per ticket category.
+
+**Auth:** Ticket staff (`MANAGE_TICKETS`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/tickets/discord/sla"
+```
+
+**Response:** `{ "windowDays": 30, "overall": { "label", "tickets", "answered", "unanswered", "medianFirstResponseMinutes", "medianResolutionMinutes" }, "byCategory": [ … ] }`.
+
+---
+
+### `GET /api/admin/tickets/discord/answer-feedback`
+
+**Why:** How useful the support assistant's automatic answers were, as rated by members — overall, by retrieval coverage band and by whether the model claimed to be grounded — plus the latest unhelpful answers to learn from.
+
+**Auth:** Ticket staff (`MANAGE_TICKETS`).
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/tickets/discord/answer-feedback"
+```
+
+**Response:** `{ "windowDays", "minRated", "overall": { "label", "offered", "helpful", "unhelpful", "unrated", "helpfulRate" }, "byCoverage": [ … ], "byGrounded": [ … ], "recentUnhelpful": [{ "question", "answer", "confidence", "coverage", "modelGrounded", … }] }`.
+
+---
+
+### `GET /api/admin/type-trainings/settings`
+
+**Why:** Which Discord role colours mark "locomotive type" roles that type trainings can grant, and which roles currently match.
+
+**Auth:** Session or bearer, `HOST_TRAINING`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/type-trainings/settings"
+```
+
+**Response:** `{ "colors": ["#a84300"], "usingFallback": false, "matched": [ …roles… ], "available": [ …guild role colours… ] }` — `usingFallback` is true while no colour is set and the locomotive chip roles are offered instead.
+
+---
+
+### `PATCH /api/admin/type-trainings/settings`
+
+**Why:** Set the marking colours (at most 10). An empty list clears them.
+
+**Auth:** Session or bearer, `MANAGE_INSTRUCTORS`. Logged as `TYPE_TRAINING_COLORS_UPDATED`.
+
+**Request:** JSON body `{ "colors": ["#a84300", "#1f8b4c"] }` — hex strings or integers; `#000000` is refused (Discord's "no colour").
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"colors":["#a84300"]}' "$HSR_URL/api/admin/type-trainings/settings"
+```
+
+**Response:** `{ "colors": [ … ], "usingFallback": false, "matched": [ … ] }`. `400` for an invalid colour or more than 10.
+
+---
+
+### `POST /api/admin/users/bulk`
+
+**Why:** Ban, unban or sign out up to 50 members at once from the users list.
+
+**Auth:** Session or bearer, `MANAGE_USERS`. Members the caller may not act on (higher rank, themselves, …) are skipped with a reason. Every change is logged for both the admin and the member.
+
+**Request:** JSON body — `action` (`ban` | `unban` | `logout`), `userIds` (1–50 ids), `reason` (required for `ban`, at least 3 characters).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"logout","userIds":["clu1","clu2"]}' "$HSR_URL/api/admin/users/bulk"
+```
+
+**Response:** `{ "action": "logout", "applied": [{ "userId", "label" }], "skipped": [{ "userId", "label", "reason" }] }`. `logout` bumps the session version (all web sessions end) and revokes mobile sessions.
+
+---
+
+### `DELETE /api/admin/locomotive-pool/chips/[id]/image`
+
+**Why:** Remove a locomotive chip's photo.
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/locomotive-pool/chips/clc123/image"
+```
+
+**Response:** `{ "imageUrl": null }`. `404 { "error": "Chip not found" }`.
+
+---
+
+### `DELETE /api/admin/wagon-pool/chips/[id]/image`
+
+**Why:** Remove a wagon chip's photo.
+
+**Auth:** Session or bearer, `MANAGE_LOCOMOTIVE_POOL`.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/wagon-pool/chips/clw123/image"
+```
+
+**Response:** `{ "imageUrl": null }`. `404 { "error": "Chip not found" }`.
+
+## Admin: Terms & Privacy Versions
+
+Both need a session and `MANAGE_USERS`. These replace the old `POST /api/admin/terms/notify`, which only emailed a link and recorded nothing.
+
+### `GET /api/admin/legal/versions`
+
+**Why:** Every published Terms/Privacy version, newest first, with how many members accepted each, and how many active members there are to compare against.
+
+```bash
+curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/admin/legal/versions"
+```
+
+**Response:**
+```json
+{
+  "memberCount": 412,
+  "versions": [{ "id": "clv…", "effectiveDate": "2026-10-16T00:00:00.000Z", "publishedAt": "…", "changes": { "hu": ["…"], "en": ["…"] }, "publishedBy": "Admin", "acceptances": 205 }]
+}
+```
+
+---
+
+### `POST /api/admin/legal/versions`
+
+**Why:** Publish a new version. From the next page load every signed-in member is sent to the acceptance page until they accept it, so this is not for typo fixes. Optionally emails every member the list of changes (an essential letter, sent regardless of notification settings).
+
+**Auth:** Logged as `LEGAL_VERSION_PUBLISH`.
+
+**Request:** JSON body — `effectiveDate` (`YYYY-MM-DD`, required; printed as "Last updated" on both pages), `changes` (`{ "hu": [ … ], "en": [ … ], "de": [ … ] }` — at least one Hungarian line; other languages fall back to Hungarian; up to 20 lines of 500 characters each), `notify` (boolean).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"effectiveDate":"2026-10-16","changes":{"hu":["Discord-értesítések és értesítési beállítások."],"en":["Discord notifications and notification settings."]},"notify":true}' \
+  "$HSR_URL/api/admin/legal/versions"
+```
+
+**Response:** `{ "id": "clv…", "notified": 398 }` — `notified` is the number of letters queued (0 without `notify`). `400` for a malformed date or no Hungarian change line.
+
+## Server-to-server: Cron Jobs
+
+Every cron job is a `POST` protected by the `x-api-key: $CRON_API_KEY` header (compared in constant time), except where an entry says otherwise. `scripts/crontab.txt` holds the production schedule. Callers are the server's own crontab — never a browser or an app.
 
 ### `POST /api/cron/missed-assignments`
 
@@ -6059,6 +9966,8 @@ curl -sS -X POST \
 ```
 If there were no bookings at all yesterday: `{ "message": "No schedules for today", "sent": 0 }` (note: this message is emitted even though the check is for yesterday's bookings feeding the missed-assignment computation). If there were bookings but none missed: `{ "message": "No missed assignments yesterday", "sent": 0 }`. Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to send missed assignments emails" }`.
 
+---
+
 ### `POST /api/cron/daily-schedule`
 
 **Why:** Emails every driver/dispatcher with an APPROVED `ScheduleRequest` for today a summary of their day's assignments, grouped per user. A schedule that changes throughout the evening before needs one authoritative morning-of digest rather than a page nobody opens.
@@ -6078,6 +9987,8 @@ curl -sS -X POST \
 { "message": "Daily schedule emails sent", "sent": 12, "skipped": 1 }
 ```
 No schedules today → `{ "message": "No schedules for today", "sent": 0 }`. Bad key → 401. Failure → 500 `{ "error": "Failed to send daily schedule emails" }`.
+
+---
 
 ### `POST /api/cron/weekly-driver`
 
@@ -6099,6 +10010,8 @@ curl -sS -X POST \
 ```
 (exact fields come from `sendWeeklyDriverAnnouncement()`). When it isn't the scheduled day/time yet: `{ "success": true, "skipped": true, "reason": "not the scheduled time" }`. Bad/missing bearer token → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to run weekly driver cron" }`.
 
+---
+
 ### `POST /api/cron/live-activity-update`
 
 **Why:** Pushes an APNs Live Activity content-state update (train position, ETA, badge image) to every iOS device with a `LiveActivityToken` on an ACTIVE duty. Live Activities need periodic pushes to refresh their on-screen state; nothing about an ongoing duty otherwise triggers a push on its own, so this has to be polled on an interval (see the Push Notifications section, iOS Live Activity).
@@ -6119,6 +10032,8 @@ curl -sS -X POST \
 ```
 `removed` counts push tokens deleted after APNs returned 410/400 (device unregistered / bad token). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to process Live Activity updates" }`.
 
+---
+
 ### `GET /api/cron/live-activity-update`
 
 **Why:** Identical body to the `POST` handler above — `GET` simply calls `POST(request)` internally. Exists so a cron trigger or health-check that can only issue `GET` requests can still run the same job; the underlying job is the same batch APNs push described above.
@@ -6134,6 +10049,8 @@ curl -sS -X GET \
 ```
 
 **Response:** Identical shape to `POST` above — `{ "success": true, "total": ..., "succeeded": ..., "failed": ..., "removed": ... }`. Same 401/500 error cases.
+
+---
 
 ### `POST /api/cron/weekly-duty-check`
 
@@ -6159,6 +10076,8 @@ curl -sS -X POST \
 }
 ```
 (fields depend on `runWeeklyDutyCheck()`'s own return shape, spread into the response; `instructors` is `null` if that sub-check itself threw, which is caught and logged without failing the whole request). Bad key → 401. Failure of the outer check → 500 `{ "error": "Internal server error" }`.
+
+---
 
 ### `POST /api/cron/training-deadline-check`
 
@@ -6190,6 +10109,8 @@ curl -sS -X POST \
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. This route has no try/catch around the body, so an unhandled exception surfaces as Next.js's default 500 response rather than a custom JSON error.
 
+---
+
 ### `POST /api/cron/training-session-cleanup`
 
 **Why:** Closes any `TrainingAccessSession` whose `expiresAt` has passed but was never explicitly ended, stamping `endedAt`/`minutesConsumed` and rolling the consumed minutes into `TrainingProgress.totalMinutesUsed`. A session a member simply closed the tab on (or lost connectivity during) otherwise never gets its minutes accounted for, and the hour-budget logic depends on that being accurate.
@@ -6209,6 +10130,8 @@ curl -sS -X POST \
 { "ok": true, "closed": 6 }
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`.
+
+---
 
 ### `POST /api/cron/exam-cleanup`
 
@@ -6230,6 +10153,8 @@ curl -sS -X POST \
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. No explicit try/catch — an unhandled error surfaces as Next.js's default 500.
 
+---
+
 ### `POST /api/cron/exam-slot-close`
 
 **Why:** Runs `closeExamSlot()` on every `ACTIVE` `ExamTimeSlot` whose `EXAM_SLOT_WINDOW_MINUTES`-long (60 min) window has elapsed — deciding `attended` per registrant, applying the no-show deadline penalty, sending result emails, granting/removing programme ranks, and archiving decided attempts. Being DB-driven (as opposed to an in-memory timer per slot) is exactly the point: a restart between ticks must not lose track of which slots are due to close (see the Closing Exam Slots section).
@@ -6249,6 +10174,8 @@ curl -sS -X POST \
 { "success": true, "checked": 2, "closed": 2 }
 ```
 `closed` only counts slots that were not already closed by another path (e.g., an admin's manual "End" button) between the query and the call. Bad key → 401 `{ "error": "Unauthorized" }`.
+
+---
 
 ### `POST /api/cron/closing-exam-vote`
 
@@ -6270,6 +10197,8 @@ curl -sS -X POST \
 ```
 (exact fields come from `runClosingExamVoteCron()`'s summary, spread into the JSON). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed" }`.
 
+---
+
 ### `POST /api/cron/discord-ticket-cleanup`
 
 **Why:** Auto-closes `DiscordTicket` rows with no activity for 24 hours (generating and storing a transcript, resolving the linked support conversation, and deleting the Discord channel), and sends a one-time "still there?" warning 4 hours ahead of that deadline. Support tickets left open forever are an operational leak with no natural end-of-request to trigger a close.
@@ -6290,6 +10219,8 @@ curl -sS -X POST \
 ```
 If nothing was due to close (regardless of warnings): `{ "closed": 0, "warned": 1 }`. Bad key → 401 `{ "error": "Unauthorized" }`. No explicit try/catch around the body — an unhandled error surfaces as Next.js's default 500.
 
+---
+
 ### `POST /api/cron/perf-cleanup`
 
 **Why:** Deletes `GamePerfPlayerSnapshot` and `GamePerfSnapshot` rows older than 24 hours in one transaction. Game performance telemetry is high-volume and only useful briefly; without a periodic prune it grows unbounded (see the Track Mapper section for the related, separately-retained `TrackMapTrace` data, which this route does not touch).
@@ -6309,6 +10240,8 @@ curl -sS -X POST \
 { "success": true, "deletedPlayerSnapshots": 15234, "deletedSnapshots": 890 }
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. No explicit try/catch — an unhandled error surfaces as Next.js's default 500.
+
+---
 
 ### `POST /api/cron/news-sync`
 
@@ -6338,6 +10271,8 @@ curl -sS -X POST \
 ```
 (`fetched`/`created`/`updated`/`pruned` come from `syncDiscordNewsToDatabase()`'s stats, spread at the top level for the news channel). If the changelog sync itself throws, `changelog` is `null` and `changelogError` carries the message, while the overall response is still 200. Bad key → 401 `{ "error": "Unauthorized" }`. Failure of the main news sync → 500 `{ "error": "Failed to sync news" }`.
 
+---
+
 ### `POST /api/cron/cargo-generate`
 
 **Why:** Generates the day's pool of 20 cargo orders (unique order numbers, wagon counts, destination "Mecsekháza") for the cargo-driver game feature, and expires yesterday's still-`AVAILABLE` orders. This has to run once per calendar day to hand every driver the same shared order pool, rather than being generated per-request.
@@ -6358,6 +10293,8 @@ curl -sS -X POST \
 ```
 Already generated today (idempotent, checked via a `>= 20` count for today's UTC date) → `{ "skipped": true, "reason": "already generated" }`. Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
 
+---
+
 ### `POST /api/cron/dispatcher-peak-update`
 
 **Why:** Refreshes the cached dispatcher peak-hour data via `updateDispatcherPeakCache()` — a computed cache over historical dispatch activity that is too expensive to recompute per page view, so it is refreshed on a schedule instead.
@@ -6377,6 +10314,8 @@ curl -sS -X POST \
 { "success": true }
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
+
+---
 
 ### `POST /api/cron/schedule-auto-assign-tomorrow`
 
@@ -6403,6 +10342,8 @@ curl -sS -X POST \
 ```
 (the `assigned`/`skipped`-style fields come from `runScheduleAutoAssign()`'s own return shape, spread alongside `date`/`actorUserId`). Auto-assign disabled → `{ "message": "Auto-assign disabled, skipped", "skipped": true }`. No eligible approver found → 500 `{ "error": "No Director General+ user found to act as approver" }`. Bad key → 401 `{ "error": "Unauthorized" }`. Other failure → 500 `{ "error": "Failed to auto-assign tomorrow's schedule" }`.
 
+---
+
 ### `POST /api/cron/monthly-leaderboard`
 
 **Why:** Sends the monthly leaderboard announcement (Discord embed) once the month has actually rolled over, gated by `canRunMonthlyLeaderboardCron()` so repeated ticks within the same month are no-ops. Rolling the monthly leaderboard is a calendar event, not something any single user request causes.
@@ -6422,6 +10363,8 @@ curl -sS -X POST \
 { "success": true, "posted": true, "month": "2026-09" }
 ```
 (fields from `sendMonthlyLeaderboardAnnouncement()`'s return, spread in). Not yet time to run → `{ "success": true, "skipped": true, "reason": "already ran this month" }`. Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to run monthly leaderboard cron" }`.
+
+---
 
 ### `POST /api/cron/team-reset`
 
@@ -6443,6 +10386,8 @@ curl -sS -X POST \
 ```
 (fields come from `runTeamResetCheck()`'s own return shape). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
 
+---
+
 ### `POST /api/cron/discord-member-sync`
 
 **Why:** Mirrors the Discord guild's member list into `DiscordGuildMember` (`syncGuildMembers()`) and writes the day's `CommunityDailyStat` snapshot (`recordDailySnapshot()`), via `runCommunityStatsSync()`. `User` cannot describe someone who is in the guild but never touched the site, so this mirror — and its daily trend row — has to be built from a scheduled Discord API crawl, not from anything the web app's own requests observe (see Community Statistics).
@@ -6462,6 +10407,8 @@ curl -sS -X POST \
 { "success": true, "sync": { "added": 3, "updated": 210, "left": 1 }, "snapshot": { "date": "2026-09-13" } }
 ```
 (the `sync`/`snapshot` shape comes from `runCommunityStatsSync()`'s own return value). If the Discord guild member sync itself failed, no daily snapshot is written and the response is 502: `{ "error": "Discord guild member sync failed — snapshot skipped" }` — this is a deliberate gap-not-cliff design so a bad day never reads as a mass exodus. Bad key → 401 `{ "error": "Unauthorized" }`. Other failure → 500 `{ "error": "Internal server error" }`.
+
+---
 
 ### `POST /api/cron/admission-queue`
 
@@ -6483,25 +10430,7 @@ curl -sS -X POST \
 ```
 This route has no try/catch — an unhandled error surfaces as Next.js's default 500. Bad key → 401 `{ "error": "Unauthorized" }`.
 
-### `POST /api/cron/shop-apple-pass`
-
-**Why:** Retries Apple Wallet membership pass deliveries left unfinished at payment time (`retryPendingApplePasses()`) — a restart mid-flight, a momentary SMTP failure, an avatar host that was briefly down. Pass generation shells out to `openssl` and fetches an avatar over the network, so it deliberately runs outside the payment transaction (see the Apple Wallet Membership Pass section) and needs this cron to finish what didn't complete inline.
-
-**Auth:** `x-api-key` header compared to `process.env.CRON_API_KEY`.
-
-**Request:** No query parameters.
-
-```bash
-curl -sS -X POST \
-  -H "x-api-key: $CRON_API_KEY" \
-  "$HSR_URL/api/cron/shop-apple-pass"
-```
-
-**Response:**
-```json
-{ "ok": true, "delivered": 2, "failed": 0 }
-```
-Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
+---
 
 ### `POST /api/cron/wrapped`
 
@@ -6523,6 +10452,8 @@ curl -sS -X POST \
 ```
 (the `queued`/`total` fields come from `queueWrappedForYear()` and are `{ "queued": 0, "total": 0 }` when `queue` was omitted; `sent`/`failed`/`remaining`-style fields come from `processWrappedQueue()`). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
 
+---
+
 ### `POST /api/cron/shop-printful-retry`
 
 **Why:** Retries shop orders whose Printful print-on-demand submission previously failed (`retryFailedPrintfulOrders()`) — a third-party fulfillment API call that can fail transiently and has no user-facing action to hang a retry off of.
@@ -6542,6 +10473,8 @@ curl -sS -X POST \
 { "ok": true, "retried": 1, "failed": 0 }
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
+
+---
 
 ### `POST /api/cron/shop-expire-orders`
 
@@ -6563,6 +10496,8 @@ curl -sS -X POST \
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Internal server error" }`.
 
+---
+
 ### `POST /api/cron/radio-cleanup`
 
 **Why:** Deletes in-game radio (Telephone tool) `RadioMessage` rows older than 30 days (`RETENTION_DAYS`). In-game radio chatter has no legitimate long-term retention need and would otherwise grow unbounded.
@@ -6582,6 +10517,8 @@ curl -sS -X POST \
 { "deleted": 128 }
 ```
 Bad key → 401 `{ "error": "Unauthorized" }`. No explicit try/catch — an unhandled error surfaces as Next.js's default 500.
+
+---
 
 ### `POST /api/cron/duty-day-report`
 
@@ -6610,6 +10547,8 @@ curl -sS -X POST \
 ```
 (the `queued`-style field comes from `queueDutyDayReports()` and the `sent`/`failed`/`remaining`-style fields come from `processDutyDayQueue()`, both spread into the response alongside `date`). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to run duty day reports" }`.
 
+---
+
 ### `POST /api/cron/document-reminders`
 
 **Why:** Re-resolves the required signers of every PENDING signable document right now (not at submit time) and writes to whichever of them have not signed, via `remindPendingSigners()` — picking up a signer whose Discord role cache was stale at submit time, or someone promoted into the signer set afterwards (see the Document Signature Reminders section). This has to be a scheduled re-check because role membership drifts continuously and nothing about a pending document re-evaluates its own audience.
@@ -6629,6 +10568,8 @@ curl -sS -X POST \
 { "documentsChecked": 4, "remindersSent": 3, "signersDue": 3 }
 ```
 (exact fields come from `remindPendingSigners()`'s own return shape). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to send document reminders" }`.
+
+---
 
 ### `POST /api/cron/email-queue`
 
@@ -6655,1340 +10596,133 @@ curl -sS -X POST \
 ```
 (the `sent`/`failed`/`retried`-style fields come from `drainEmailOutbox()`, and `stats` from `emailOutboxStats()` — both spread/nested into the response). Bad key → 401 `{ "error": "Unauthorized" }`. Failure → 500 `{ "error": "Failed to drain the email queue" }`.
 
-## Cargo, Changelog, Closing-Exam Vote, Dispatch Orders, Documents, Duty
-
-### `GET /api/changelog`
-
-**Why:** Feeds the site-wide "what's new" popup with the changelog entries a member has not seen yet, mirrored from the Discord changelog channel.
-
-**Auth:** Session cookie or bearer (`getSessionWithBearer()`). A signed-out visitor is answered `{ entries: [], total: 0, seenUpTo: null }` with status 200 rather than 401 — the popup is mounted on public pages too.
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/changelog" -b cookies.txt
-```
-
-**Response:**
-
-```json
-{
-  "entries": [
-    { "id": "abc123", "title": "New feature", "content": "...", "publishedAt": "2026-09-10T12:00:00.000Z" }
-  ],
-  "total": 1,
-  "seenUpTo": "2026-09-05T00:00:00.000Z"
-}
-```
-On any internal failure it still returns 200 with the empty shape.
-
 ---
 
-### `POST /api/changelog`
+### `POST /api/push/duty-reminders`
 
-**Why:** Dismisses the popup, marking everything up to the newest entry the client actually rendered as seen (never marks an entry posted while the dialog was open).
+**Why:** External cron endpoint that scans today's approved schedule requests and sends push reminders before a driver's or dispatcher's shift starts, at the times each member chose (`/api/profile/reminders`, default 30/10/5 minutes), so members don't have to watch a clock.
 
-**Auth:** Session cookie or bearer. 401 for a signed-out caller.
+**Auth:** Shared-secret cron auth — `Authorization: Bearer <CRON_SECRET>` header (not `CRON_API_KEY`, unlike most other cron routes documented elsewhere in this app).
 
-**Request:** JSON body: `seenUpTo` (string, required — an ISO date parseable by `new Date()`).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"seenUpTo":"2026-09-10T12:00:00.000Z"}' \
-  "$HSR_URL/api/changelog"
-```
-
-**Response:**
-
-```json
-{ "success": true }
-```
-Errors: 400 `{"error":"Invalid body"}` (unparsable JSON) or `{"error":"seenUpTo must be a date"}` (missing/invalid date); 500 `{"error":"Failed to save"}`.
-
----
-
-### `GET /api/cargo/orders`
-
-**Why:** Lists today's still-available cargo shipments for a member qualified to haul freight, so they can pick one before starting a `CARGO_DRIVER` duty.
-
-**Auth:** Session cookie or bearer, plus `permissions.isCargoGroup()` (the cargo-qualified Discord role group). 403 otherwise.
-
-**Request:** No parameters — always today's date (UTC midnight).
+**Request:** No body/params.
 
 ```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/cargo/orders"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "id": "clx1",
-    "date": "2026-09-13T00:00:00.000Z",
-    "orderNumber": 12,
-    "status": "AVAILABLE",
-    "wagonCount": 8,
-    "totalWeightT": 640,
-    "takenByUserId": null
-  }
-]
-```
-500 `{"error":"Internal server error"}` on failure.
-
----
-
-### `GET /api/closing-exam-vote/[token]`
-
-**Why:** Renders the public voting page a candidate reaches from the 06:00 "do you want to sit today?" letter or the 12:00 hour-pick letter, without requiring login (the letter is opened on a phone that may not be signed in).
-
-**Auth:** Public — the `token` in the URL is the only authority; it resolves to exactly one `ClosingExamDayVote` or `ClosingExamHourVote` row.
-
-**Request:** Path param `token` (string). No body.
-
-```bash
-curl -sS "$HSR_URL/api/closing-exam-vote/$TOKEN"
-```
-
-**Response (day vote):**
-
-```json
-{
-  "kind": "DAY",
-  "open": true,
-  "date": "2026-09-13",
-  "response": null,
-  "programNames": ["Train Driver"],
-  "deadlineHour": 12
-}
-```
-**Response (hour vote):**
-
-```json
-{
-  "kind": "HOUR",
-  "open": true,
-  "date": "2026-09-13",
-  "hour": null,
-  "programName": "Train Driver",
-  "hours": [14, 15, 16, 17, 18, 19, 20, 21, 22],
-  "deadlineHour": 14
-}
-```
-404 `{"error":"Not found"}` for an unknown token.
-
----
-
-### `POST /api/closing-exam-vote/[token]`
-
-**Why:** Casts the vote — Yes/No for the day question, or the chosen hour for the hour question. Re-checks the deadline server-side so a late submission cannot change a tally the exam was already scheduled on.
-
-**Auth:** Public, token-authenticated via the URL (same as GET). The letter's buttons only pre-select `?answer=`; this call is what actually commits it.
-
-**Request:** JSON body — for a DAY-kind token: `response` (boolean, required); for an HOUR-kind token: `hour` (number, required, must be one of `EXAM_HOURS`, i.e. one of 14–22).
-
-```bash
-curl -sS -X POST -H "Content-Type: application/json" \
-  -d '{"response": true}' \
-  "$HSR_URL/api/closing-exam-vote/$TOKEN"
-```
-
-**Response:**
-
-```json
-{ "ok": true, "response": true }
-```
-or `{ "ok": true, "hour": 18 }`. Errors: 404 `{"error":"Not found"}`; 409 `{"error":"Voting closed","code":"closed"}` once the deadline passed; 400 `{"error":"response must be a boolean"}` / `{"error":"hour out of range"}`.
-
----
-
-### `POST /api/dispatch-orders`
-
-**Why:** Lets a dispatcher on active duty draft a written dispatch order ("írásbeli rendelkezés") addressed to a specific driver who is also on active duty.
-
-**Auth:** Session cookie or bearer, plus `permissions.canUseDispatchOrders()`, plus an active `TRAIN_DISPATCHER` duty (`getActiveDispatcherDuty`). 403 without either.
-
-**Request:** JSON body: `content` (string, required, trimmed non-empty), `recipientId` (string, required — must be a user currently on an active `TRAIN_DRIVER` duty).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Kérem várjon a 3-as vágányon.","recipientId":"user_123"}' \
-  "$HSR_URL/api/dispatch-orders"
-```
-
-**Response:**
-
-```json
-{
-  "id": "ord_1",
-  "status": "DRAFT",
-  "content": "Kérem várjon a 3-as vágányon.",
-  "issuerId": "user_dispatcher",
-  "recipientId": "user_123",
-  "createdAt": "2026-09-13T10:00:00.000Z"
-}
-```
-Errors: 403 `{"error":"Nincs jogosultság az írásbeli rendelkezésekhez"}`, 403 `{"error":"Nincs aktív forgalmi szolgálat"}`, 400 `{"error":"A rendelkezés tartalma kötelező"}` / `{"error":"Címzett megadása kötelező"}`, 400 `{"error":"A címzett nincs aktív mozdonyvezetői szolgálatban"}`.
-
----
-
-### `GET /api/dispatch-orders`
-
-**Why:** Lists every dispatch order the caller is party to — everything they issued, plus everything addressed to them once it has left DRAFT.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "id": "ord_1",
-    "status": "FINALIZED",
-    "content": "Kérem várjon a 3-as vágányon.",
-    "issuerId": "user_dispatcher",
-    "recipientId": "user_123",
-    "revision": 0,
-    "createdAt": "2026-09-13T10:00:00.000Z"
-  }
-]
-```
-
----
-
-### `GET /api/documents`
-
-**Why:** A member's own drafted/submitted signed documents (signers use the admin surface for everyone else's).
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS` (`canAccessDocuments()`, via `requireDocumentsSurface()`). 403 without it.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "id": "doc_1",
-    "title": "Kérelem",
-    "status": "DRAFT",
-    "verifyCode": "AB12CD",
-    "requiredSignatures": 1,
-    "updatedAt": "2026-09-13T09:00:00.000Z"
-  }
-]
-```
-
----
-
-### `POST /api/documents`
-
-**Why:** Creates a new draft document (the base of the "sign documents" flow), with a stable verify code assigned up front so it survives a reject/resubmit cycle.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`.
-
-**Request:** JSON body: `title` (string, required, trimmed non-empty, ≤ `MAX_TITLE_LENGTH`), `body` (string, optional, ≤ `MAX_BODY_LENGTH`), `requiredSignatures` (number, optional — omitted means 1, must parse within 1..`MAX_REQUIRED_SIGNATURES` via `parseRequiredSignatures`).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Kérelem","body":"...","requiredSignatures":2}' \
-  "$HSR_URL/api/documents"
-```
-
-**Response:**
-
-```json
-{
-  "id": "doc_1",
-  "title": "Kérelem",
-  "status": "DRAFT",
-  "verifyCode": "AB12CD",
-  "requiredSignatures": 2
-}
-```
-Errors: 400 `{"error":"A cím megadása kötelező"}`, `{"error":"A cím legfeljebb N karakter lehet"}`, `{"error":"A dokumentum törzse túl hosszú"}`, `{"error":"Az aláírók száma 1 és N között lehet"}`.
-
----
-
-### `GET /api/duty/booking`
-
-**Why:** The caller's own DRIVER schedule bookings (`ScheduleRequest` rows) for today and onward, shaped for the duty page's booking board.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** Query param `date` (optional, `YYYY-MM-DD`; defaults to today UTC) — returned bookings are `date >= filterDate`.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/booking?date=2026-09-14"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "id": "req_1",
-    "pairGroup": "IC101",
-    "fordaGroup": "F1",
-    "operator": "MÁV",
-    "date": "2026-09-14T00:00:00.000Z",
-    "status": "PENDING",
-    "trackNumber": null,
-    "responseNote": null
-  }
-]
-```
-
----
-
-### `POST /api/duty/booking`
-
-**Why:** Lets a Train Driver reserve a train pair for a future day (or, within an hour of departure, for today) — the advance-booking half of the duty flow.
-
-**Auth:** Session cookie or bearer, plus `permissions.canDrive()`. 403 `{"error":"Only Train Drivers can book train pairs"}` otherwise.
-
-**Request:** JSON body: `pairGroup` (string, required), `date` (string, required, parseable date). Booking week is Monday–Sunday (`getBookingWindow`) unless the train departs within 60 minutes today ("last-minute booking").
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"pairGroup":"IC101","date":"2026-09-14"}' \
-  "$HSR_URL/api/duty/booking"
-```
-
-**Response (201):**
-
-```json
-{
-  "id": "req_1",
-  "pairGroup": "IC101",
-  "fordaGroup": "F1",
-  "operator": "MÁV",
-  "date": "2026-09-14T00:00:00.000Z",
-  "status": "PENDING",
-  "trackNumber": null,
-  "responseNote": null
-}
-```
-Errors: 400 `{"error":"pairGroup and date are required"}`, `{"error":"Invalid date"}`, `{"error":"Driver requests can only be made for the current booking week (Monday to Sunday)"}`, `{"error":"No outbound train found for this pair group"}`, `{"error":"You already have a booking for this train pair on this date"}`, `{"error":"This train pair is already booked for this date"}`; **booking time conflict** — 400 with a localized `error` message from `conflictMessage()` (built from `DRIVER_CONFLICT_MINUTES` = 120) plus a `conflicts` array naming the other train and its departure.
-
----
-
-### `POST /api/duty/dispatcher-booking`
-
-**Why:** Lets a dispatcher reserve a future hour-long dispatcher slot in advance (max 5 dispatchers per hour).
-
-**Auth:** Session cookie or bearer, plus `permissions.canDispatch()`. 403 otherwise.
-
-**Request:** JSON body: `date` (string `YYYY-MM-DD`, required, must be strictly after today per `getTodayStoredBudapestDate()`), `hour` (number 0–23, required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"date":"2026-09-14","hour":18}' \
-  "$HSR_URL/api/duty/dispatcher-booking"
-```
-
-**Response (201):**
-
-```json
-{
-  "id": "book_1",
-  "userId": "user_1",
-  "date": "2026-09-14T00:00:00.000Z",
-  "hour": 18,
-  "status": "PENDING",
-  "scheduleRequestId": "req_2"
-}
-```
-Errors: 400 `{"error":"date and hour (0–23) are required"}`, `{"error":"Invalid date"}`, `{"error":"Bookings are only available for future dates. For today, start duty directly."}`; 409 `{"error":"This slot is full (max 5 dispatchers)"}`, `{"error":"You already booked this slot"}`.
-
----
-
-### `DELETE /api/duty/dispatcher-booking`
-
-**Why:** Cancels the caller's own dispatcher slot booking (and its underlying `ScheduleRequest`), as long as it has not already been approved.
-
-**Auth:** Session cookie or bearer. The booking must belong to the caller.
-
-**Request:** Query param `id` (string, required — the booking id).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/duty/dispatcher-booking?id=book_1"
-```
-
-**Response:**
-
-```json
-{ "success": true }
-```
-Errors: 400 `{"error":"id is required"}`; 404 `{"error":"Booking not found"}`; 403 `{"error":"Not your booking"}`, `{"error":"Cannot cancel an approved booking"}`.
-
----
-
-### `GET /api/duty/available-trains`
-
-**Why:** Populates the driver's Start-duty train picker: which trains are free, taken, past their departure grace, or reserved — including the caller's own booking-time conflicts, so the board explains itself before the click.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/available-trains?date=2026-09-13"
-```
-
-**Response:**
-
-```json
-{
-  "outboundTrains": [
-    {
-      "id": "train_1",
-      "trainNumber": "9601",
-      "trainType": "IC",
-      "departureTime": "08:34",
-      "isAvailable": false,
-      "isReservedForMe": true,
-      "unavailableReason": null,
-      "timeConflict": { "trainNumber": "9701", "departureTime": "09:10", "minutesApart": 36 },
-      "pairGroup": "IC101",
-      "direction": 0
-    }
-  ],
-  "returnTrains": [],
-  "myApprovedRequests": [{ "id": "req_1", "pairGroup": "IC101", "status": "APPROVED" }],
-  "currentTime": "08:20"
-}
-```
-`unavailableReason` values include `"Assigned to <name>"`, `"Departed"` (only once past `DEPARTURE_GRACE_MINUTES`, i.e. `isPastDepartureGrace`), `"Reserved by <name>"`. 500 `{"error":"Failed to get available trains"}` on failure.
-
----
-
-### `POST /api/duty/start`
-
-**Why:** Opens a duty of any type (`TRAIN_DRIVER`, `TRAIN_DISPATCHER`, `CARGO_DRIVER`, `TICKET_INSPECTOR`) — the single entry point that enforces every rank, suspension, trainee and reservation rule before real service begins.
-
-**Auth:** Session cookie or bearer, plus `dbUser.isActiveInGame` (or `role === "ADMIN"`). Per-type permission: `CAN_DRIVE` (`canDrive()`) or trainee driver, `CAN_DISPATCH` (`canDispatch()`), `isCargoGroup()`, or `CAN_INSPECT` (`canInspect()`). Checks `permissions.suspensionFor(scope)` for the duty's `SuspensionScope` (via `scopeForDutyType`) before the permission checks, so a trainee holding no flag is still blocked.
-
-**Request:** JSON body: `dutyType` (required, one of the four types), plus type-specific fields: `startLocationId` (required for TRAIN_DRIVER), `trainIds` (array, optional), `trackNumber` (string, optional), `scheduleRequestId`/`scheduleRequestIds` (optional), `watchingStationIds` (array, required for TRAIN_DISPATCHER), `dispatcherPosition` (optional, one of `főrendelkező|rendelkező|külsős|gyakornok`), `cargoOrderId` (required for CARGO_DRIVER), `inspectorBookingId`/`inspectorPairGroup` (optional for TICKET_INSPECTOR), `notes` (optional).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"dutyType":"TRAIN_DRIVER","startLocationId":"loc_1","trainIds":["train_1","train_2"]}' \
-  "$HSR_URL/api/duty/start"
-```
-
-**Response (201):** the created `Duty` with `user`, `startLocation`, `assignedTrains` (with train + stops + station), `cargoOrder`.
-
-Notable errors: 403 suspension — `{"error":"You are suspended from <scope> service.","suspension":{"scope":"DRIVER","reason":"...","expiresAt":"2026-10-01T00:00:00.000Z"}}`; 403 `{"error":"Trainee Drivers can only start duty after passing the closing exam."}`; 403 `{"error":"Trainee Drivers can only start duty by providing a track number, selecting trains is not allowed yet."}`; 403 `{"error":"Trainee Drivers cannot start duty against a schedule reservation."}`; 403 `{"error":"Trainee Ticket Inspectors cannot start duty against a specific service until their required supervisions are complete."}`; 400 `{"error":"You already have an active duty. Please end it first."}`; 400 departed-service — `{"error":"This service has already departed, the reservation can no longer be resumed."}`; 409 `{"error":"This inspector booking is no longer active."}`; 409 `{"error":"This shipment has already been taken. Please choose another."}`; 409 `{"error":"This schedule request is already linked to another duty."}`.
-
----
-
-### `GET /api/duty/inspector-trains`
-
-**Why:** The ticket inspector's board of pairs their rank may work on a given day, with the driver holding each pair and who already booked it.
-
-**Auth:** Session cookie or bearer, plus `CAN_INSPECT` (`canInspect()`). 403 `{"error":"Only ticket inspectors can view inspector services"}` otherwise.
-
-**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/inspector-trains?date=2026-09-14"
-```
-
-**Response:**
-
-```json
-{
-  "date": "2026-09-14T00:00:00.000Z",
-  "pairs": [
-    { "pairGroup": "IC101", "driver": "user_1 name", "bookedBy": null, "isAllowed": true }
-  ]
-}
-```
-(shape from `buildInspectorBoard()`, spread after `date`.) 500 `{"error":"Failed to load inspector services"}` on failure.
-
----
-
-### `GET /api/duty/dispatchers`
-
-**Why:** Lists every dispatcher currently on active duty — used by drivers/dispatchers to see who else is working the panel right now.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/dispatchers"
-```
-
-**Response:**
-
-```json
-[
-  { "userId": "user_1", "displayName": "Kovács János", "position": "főrendelkező" }
-]
-```
-
----
-
-### `POST /api/duty/end`
-
-**Why:** Ends the caller's active duty (any type), releasing a claimed cargo order back to the pool, closing any Live Activity, and updating cumulative user stats.
-
-**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly, not `requireAuth()`).
-
-**Request:** JSON body (optional/empty allowed): `dutyId` (string, optional — defaults to the caller's current active duty if omitted), `notes` (string, optional).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "$HSR_URL/api/duty/end"
-```
-
-**Response:** the updated `Duty` (`status: "COMPLETED"`, `endTime` set) with `user`, `startLocation`, `assignedTrains`, `cargoOrder`.
-
-Errors: 401 `{"error":"Unauthorized"}`; 404 `{"error":"No active duty found"}`; 500 `{"error":"Failed to end duty"}`.
-
----
-
-### `GET /api/duty/inspector-booking`
-
-**Why:** The caller's own advance ticket-inspector bookings from a given date onward.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today UTC).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/inspector-booking?date=2026-09-14"
-```
-
-**Response:**
-
-```json
-[
-  { "id": "ib_1", "pairGroup": "IC101", "date": "2026-09-14T00:00:00.000Z", "status": "BOOKED", "dutyId": null }
-]
-```
-
----
-
-### `POST /api/duty/inspector-booking`
-
-**Why:** Books a train pair in advance for a ticket inspector to ride — no dispatcher approval needed, unlike a driver's booking, because the inspector rides a service the driver already holds.
-
-**Auth:** Session cookie or bearer, plus `CAN_INSPECT` (`canInspect()`) — which is already false for a suspended inspector. Also refused for a trainee inspector still under the programme's supervision requirement (`permissions.isServiceTrainee("INSPECTOR")`). Requires `InspectorSettings.enabled`.
-
-**Request:** JSON body: `pairGroup` (string, required), `date` (string, required — must fall within the current Monday–Sunday booking week, and strictly after today Budapest time; today itself is refused since inspectors start duty directly instead).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"pairGroup":"IC101","date":"2026-09-14"}' \
-  "$HSR_URL/api/duty/inspector-booking"
-```
-
-**Response (201):**
-
-```json
-{ "id": "ib_1", "pairGroup": "IC101", "date": "2026-09-14T00:00:00.000Z", "status": "BOOKED", "dutyId": null }
-```
-Errors: 403 `{"error":"Only ticket inspectors can book inspector services"}`, `{"error":"Trainee Ticket Inspectors cannot book a service until their required supervisions are complete."}`, `{"error":"Inspector bookings are currently closed"}`, `{"error":"Your inspector rank is not qualified for this service"}`; 400 `{"error":"pairGroup and date are required"}`, `{"error":"Invalid date"}`, `{"error":"Inspector bookings can only be made for the current booking week (Monday to Sunday)"}`, `{"error":"No active train found for this pair group"}`, `{"error":"Inspector services are booked in advance — for today, just start your duty"}`, `{"error":"You already booked this service for this date"}`; 409 `{"error":"This service already has an inspector"}`.
-
----
-
-### `DELETE /api/duty/inspector-booking`
-
-**Why:** Cancels the caller's own inspector booking, as long as it has not already turned into a duty.
-
-**Auth:** Session cookie or bearer. Booking must belong to the caller.
-
-**Request:** Query param `id` (string, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/duty/inspector-booking?id=ib_1"
-```
-
-**Response:**
-
-```json
-{ "ok": true }
-```
-Errors: 400 `{"error":"id is required"}`; 404 `{"error":"Booking not found"}`; 400 `{"error":"This booking is already in duty and cannot be cancelled"}`. Cancelling an already-`CANCELLED` booking still returns `{ "ok": true }`.
-
----
-
-### `GET /api/duty/dispatcher-slots`
-
-**Why:** The 24-hour peak-hour dispatcher booking board — score/peak status per hour, who has booked each one, and whether the caller has a booking in it.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** Query param `date` (optional `YYYY-MM-DD`; defaults to today, `getTodayStoredBudapestDate()`).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/dispatcher-slots?date=2026-09-14"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "hour": 18,
-    "score": 42,
-    "isPeak": true,
-    "peakGroup": "evening",
-    "isPast": false,
-    "isFull": false,
-    "bookings": [{ "userId": "user_1", "displayName": "Kovács János", "image": null, "status": "PENDING" }],
-    "myBooking": { "id": "book_1", "status": "PENDING" }
-  }
-]
-```
-
----
-
-### `GET /api/duty/my`
-
-**Why:** The full duty dashboard payload for the caller: their active duty (with a live consist match for `TRAIN_DRIVER`), today's completed duties, and this month's aggregate stats.
-
-**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly).
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/my"
-```
-
-**Response:**
-
-```json
-{
-  "activeDuty": { "id": "duty_1", "dutyType": "TRAIN_DRIVER", "consistMatch": { "matches": true } },
-  "todayDuties": [{ "id": "duty_0", "status": "COMPLETED" }],
-  "monthlyStats": { "totalDuties": 12, "totalMinutes": 720, "totalHours": 12 }
-}
-```
-401 `{"error":"Unauthorized"}`; 500 `{"error":"Failed to fetch user duties"}`.
-
----
-
-### `GET /api/duty/active`
-
-**Why:** Every currently active duty on the site (all drivers/dispatchers, or filtered to one type) — used for "who's on now" views.
-
-**Auth:** Session cookie or bearer, via full `requireAuth()` (confirms the account still exists, not just that the JWT verifies).
-
-**Request:** Query param `type` (optional, one of `TRAIN_DRIVER`/`TRAIN_DISPATCHER`).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/active?type=TRAIN_DRIVER"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "id": "duty_1",
-    "dutyType": "TRAIN_DRIVER",
-    "user": { "id": "user_1", "displayName": "Kovács János" },
-    "assignedTrains": [{ "train": { "trainNumber": "9601" } }],
-    "consistMatch": { "matches": true }
-  }
-]
-```
-500 `{"error":"Failed to fetch active duties"}`.
-
----
-
-### `POST /api/duty/next-train`
-
-**Why:** Switches an already-active `TRAIN_DRIVER` duty onto its next approved scheduled journey without ending the duty — asks the same rank/suspension/trainee questions `/api/duty/start` does, since it hands the duty real service just the same.
-
-**Auth:** Session cookie or bearer, plus `CAN_DRIVE` (`canDrive()`); checks `permissions.suspensionFor("DRIVER")` and refuses a service trainee (`isServiceTrainee("DRIVER")`).
-
-**Request:** JSON body: `scheduleRequestId` (string) or `scheduleRequestIds` (array of strings) — at least one required, must be APPROVED and belong to the caller.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"scheduleRequestIds":["req_2"]}' \
-  "$HSR_URL/api/duty/next-train"
-```
-
-**Response:** the updated `Duty` with `assignedTrains` reset to the new pair's trains, `user`, `startLocation`, `cargoOrder`.
-
-Errors: 403 suspension — `{"error":"You are suspended from Train Driver service.","suspension":{...}}`; 403 `{"error":"Trainee Drivers cannot take a scheduled journey."}`; 403 `{"error":"You don't have permission to drive a scheduled journey."}`; 400 `{"error":"scheduleRequestId(s) required"}`, `{"error":"No active Train Driver duty"}`, `{"error":"Invalid or unapproved schedule request"}`; 404 `{"error":"One or more schedule requests not found"}`.
-
----
-
-### `GET /api/dispatch-orders/active-drivers`
-
-**Why:** Lets a dispatcher on active duty see every driver currently on active duty, to pick a recipient for a new dispatch order.
-
-**Auth:** Session cookie or bearer, plus an active dispatcher duty (`getActiveDispatcherDuty`). 403 `{"error":"Nincs aktív forgalmi szolgálat"}` otherwise.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/active-drivers"
-```
-
-**Response:**
-
-```json
-[{ "userId": "user_123", "displayName": "Kovács János" }]
-```
-
----
-
-### `GET /api/dispatch-orders/stream`
-
-**Why:** Live push of dispatch-order changes to the caller (new/updated orders addressed to or from them), so the dispatch order UI updates without polling.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** None. SSE stream, keep the connection open.
-
-```bash
-curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/stream"
-```
-
-**Response:** Server-Sent Events built with `createSSEResponse()`. On an update, a plain data frame is sent:
-```
-data: update
-
-```
-The client re-fetches `/api/dispatch-orders` (or the single order) on receipt; there is no payload beyond the event itself. Periodic `:` heartbeat comments keep the connection alive through proxies.
-
----
-
-### `GET /api/dispatch-orders/[id]`
-
-**Why:** Fetches one dispatch order — for the issuer at any status, or for the recipient once it has left DRAFT (a draft is not yet visible to its addressee).
-
-**Auth:** Session cookie or bearer. Must be the issuer, or the recipient of a non-DRAFT order.
-
-**Request:** Path param `id`.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1"
-```
-
-**Response:** the serialized order (same shape as the list endpoint). 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`.
-
----
-
-### `PATCH /api/dispatch-orders/[id]`
-
-**Why:** Lets the issuer revise a `FINALIZED` order's content while it is still inside its edit window — resets both signatures and restarts the sign flow at `AWAITING_MV`, notifying the recipient they must sign again.
-
-**Auth:** Session cookie or bearer, must be the issuer, order must be `FINALIZED` and `isEditable(existing)` (inside `EDIT_WINDOW_MS`).
-
-**Request:** JSON body: `content` (string, required, trimmed non-empty).
-
-```bash
-curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Módosított szöveg"}' \
-  "$HSR_URL/api/dispatch-orders/ord_1"
-```
-
-**Response:** the updated, re-serialized order (`status: "AWAITING_MV"`, `revision` incremented, sign timestamps cleared). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"A szerkesztési idő lejárt"}`; 400 `{"error":"A rendelkezés tartalma kötelező"}`. Also pushes a notification to the recipient.
-
----
-
-### `GET /api/documents/[id]`
-
-**Why:** Fetches one signed document — the author sees their own, a signer (`SIGN_DOCUMENTS`) sees any.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS` for the surface, and either authorship or `SIGN_DOCUMENTS`. A document the caller may not see returns 404, not 403 (so document ids cannot be probed).
-
-**Request:** Path param `id`.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1"
-```
-
-**Response:** the serialized document, including attachments and signatures. 404 `{"error":"A dokumentum nem található"}` if not found or not accessible.
-
----
-
-### `PATCH /api/documents/[id]`
-
-**Why:** Lets the author edit a document while it is still a DRAFT or a REJECTED one — anything already submitted or signed is frozen, since an editable signature would prove nothing.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and must be the author.
-
-**Request:** JSON body (all optional, at least one required): `title` (string, non-empty, ≤ `MAX_TITLE_LENGTH`), `body` (string, ≤ `MAX_BODY_LENGTH`), `requiredSignatures` (number, 1..`MAX_REQUIRED_SIGNATURES`).
-
-```bash
-curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Új cím"}' \
-  "$HSR_URL/api/documents/doc_1"
-```
-
-**Response:** the updated serialized document. Errors: 403 `{"error":"Csak a készítő szerkesztheti"}`; 409 `{"error":"Csak piszkozat vagy elutasított dokumentum szerkeszthető"}`; 400 `{"error":"A cím nem lehet üres"}` / length errors / `{"error":"Nincs módosítandó mező"}`.
-
----
-
-### `DELETE /api/documents/[id]`
-
-**Why:** Deletes a draft the author no longer wants — never a submitted or signed one, which belongs to the review queue or is a permanent record.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and must be the author.
-
-**Request:** Path param `id`. No body.
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1"
-```
-
-**Response:**
-
-```json
-{ "ok": true }
-```
-Errors: 403 `{"error":"Csak a készítő törölheti"}`; 409 `{"error":"Csak piszkozat törölhető"}`. Deletes stored attachment objects from R2 first.
-
----
-
-### `POST /api/duty-appeal/[strikeId]`
-
-**Why:** Lets a driver appeal a weekly-duty strike using the token from their strike notification, before the appeal deadline. Notifies all admins by email on submission.
-
-**Auth:** Session cookie or bearer, plus a matching `token` supplied **in the JSON body** (not the URL) that must equal the strike's stored `appealToken`; the strike must belong to the caller.
-
-**Request:** Path param `strikeId`. JSON body: `token` (string, required — the one-time appeal token), `message` (string, required, trimmed non-empty).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"token":"tok_abc","message":"Kórházban voltam aznap."}' \
-  "$HSR_URL/api/duty-appeal/strike_1"
-```
-
-**Response:**
-
-```json
-{ "success": true, "appealId": "appeal_1" }
-```
-Errors: 401 `{"error":"Authentication required"}`; 400 `{"error":"Token and message required"}`; 404 `{"error":"Strike not found"}`; 403 `{"error":"You can only submit your own appeal"}`, `{"error":"Invalid token"}`; 410 `{"error":"Appeal deadline has passed"}`; 409 `{"error":"Appeal already submitted"}`; 500 `{"error":"Failed to submit appeal"}`.
-
----
-
-### `GET /api/duty/booking/stream`
-
-**Why:** Live push notifying the caller when one of their schedule-request bookings changes status (approved/rejected/etc.), so the booking board updates without polling.
-
-**Auth:** Session cookie or bearer.
-
-**Request:** None. SSE stream.
-
-```bash
-curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/booking/stream"
-```
-
-**Response:** SSE via `createSSEResponse()`. On a booking change:
-```
-data: update
-
-```
-The client re-fetches the booking list on receipt. Periodic heartbeat comments keep the connection open.
-
----
-
-### `GET /api/duty/my/consist`
-
-**Why:** A lightweight poll (every 5s from the active-duty card) of just the caller's active `TRAIN_DRIVER` duty's consist snapshot and pool-match — avoiding the much heavier `/api/duty/my` payload for a value that changes constantly while driving.
-
-**Auth:** Session cookie or bearer (`getSessionWithBearer()` directly).
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/duty/my/consist"
-```
-
-**Response:**
-
-```json
-{
-  "activeDutyId": "duty_1",
-  "consistSnapshot": ["V43 001", "V43 002"],
-  "consistMatch": { "matches": true }
-}
-```
-If there is no active driver duty: `{ "activeDutyId": null, "consistSnapshot": null, "consistMatch": null }`. 401 `{"error":"Unauthorized"}`; 500 `{"error":"Failed to fetch duty consist"}`.
-
----
-
-### `POST /api/dispatch-orders/[id]/sign-mv`
-
-**Why:** The recipient driver ("mozdonyvezető") signs a dispatch order that is awaiting their signature, advancing it to await the dispatcher's countersignature.
-
-**Auth:** Session cookie or bearer, must be the order's `recipientId`, order must be `status: "AWAITING_MV"`.
-
-**Request:** Path param `id`. No body.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/sign-mv"
-```
-
-**Response:** the updated order (`status: "AWAITING_FSZT"`, `mvSignedAt`/`mvSignName` set). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem írható alá"}`. Notifies the issuer via the SSE stream.
-
----
-
-### `POST /api/dispatch-orders/[id]/sign-fszt`
-
-**Why:** The issuing dispatcher ("forgalmi szolgálattevő") gives the second, finalizing signature once the driver has signed — the order becomes legally complete (`FINALIZED`) and the driver is push-notified.
-
-**Auth:** Session cookie or bearer, must be the order's `issuerId`, order must be `status: "AWAITING_FSZT"`.
-
-**Request:** Path param `id`. No body.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/sign-fszt"
-```
-
-**Response:** the updated order (`status: "FINALIZED"`, `fsztSignedAt`/`fsztSignName` set). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem írható alá"}`. Sends a push notification "Rendelkezés véglegesítve" to the driver.
-
----
-
-### `POST /api/dispatch-orders/[id]/send`
-
-**Why:** Issues a DRAFT (or re-sends an `AWAITING_MV`) order to the recipient, assigning it its permanent daily sequence number (`date` + `seq`) and edit-window deadline on first send only.
-
-**Auth:** Session cookie or bearer, must be the order's `issuerId`, order must be `status: "DRAFT"` or `"AWAITING_MV"`.
-
-**Request:** Path param `id`. No body.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/dispatch-orders/ord_1/send"
-```
-
-**Response:** the updated order (`status: "AWAITING_MV"`, `date`/`seq`/`issuedAt`/`editableUntil` set on first send). Errors: 404 `{"error":"Nem található"}`; 403 `{"error":"Nincs jogosultság"}`; 409 `{"error":"Ebben az állapotban nem küldhető"}`. Pushes "Új írásbeli rendelkezés" to the recipient.
-
----
-
-### `POST /api/documents/[id]/submit`
-
-**Why:** Hands a DRAFT or fixed-up REJECTED document to the signers — the transition to `PENDING` is claimed atomically (`updateMany` on the status) so a double submit cannot mail every signer twice, and every current `SIGN_DOCUMENTS` holder is notified by push and email in their own locale.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author.
-
-**Request:** Path param `id`. No body. Document body must be non-empty.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" "$HSR_URL/api/documents/doc_1/submit"
-```
-
-**Response:** the updated serialized document (`status: "PENDING"`, `submittedAt` set, prior rejection fields cleared, signatures reset to zero). Errors: 403 `{"error":"Csak a készítő küldheti be"}`; 409 `{"error":"A dokumentum már be van küldve"}` (also returned if the atomic claim loses a race); 400 `{"error":"Üres dokumentum nem küldhető be"}`.
-
----
-
-### `GET /api/documents/[id]/pdf`
-
-**Why:** Streams the signed PDF for a document through the app (rather than exposing a direct R2 URL) so only the author or a signer can retrieve it.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, and author-or-signer via `requireDocument()`. Document must already carry a `pdfKey` (i.e. be signed).
-
-**Request:** Path param `id`.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" -o document.pdf "$HSR_URL/api/documents/doc_1/pdf"
-```
-
-**Response:** raw PDF bytes with `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="<verifyCode>.pdf"`, `Cache-Control: private, max-age=3600`. 409 `{"error":"A dokumentum még nincs aláírva"}` if not yet signed.
-
----
-
-### `POST /api/documents/[id]/attachments`
-
-**Why:** Attaches an image or PDF (up to `MAX_ATTACHMENTS`) to a document that is still editable, to be rendered into the final signed document.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author, document must be DRAFT or REJECTED, and Cloudflare R2 must be configured (`isR2Configured()`).
-
-**Request:** `multipart/form-data` with field `file` — must be PNG/JPEG (`ALLOWED_IMAGE_TYPES`) or PDF (`ALLOWED_PDF_TYPES`), ≤ `MAX_ATTACHMENT_BYTES` (15 MB).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "file=@scan.pdf;type=application/pdf" \
-  "$HSR_URL/api/documents/doc_1/attachments"
-```
-
-**Response:**
-
-```json
-{
-  "id": "att_1",
-  "kind": "PDF",
-  "url": "https://s3.hsrgames.hu/documents/doc_1/scan.pdf",
-  "filename": "scan.pdf",
-  "size": 20480,
-  "contentType": "application/pdf",
-  "sortOrder": 0
-}
-```
-Errors: 403 `{"error":"Csak a készítő csatolhat"}`; 409 `{"error":"Beküldött dokumentumhoz nem csatolható melléklet"}`; 400 `{"error":"Legfeljebb N melléklet csatolható"}`, `{"error":"Nincs fájl"}`, `{"error":"Csak PNG, JPEG vagy PDF csatolható"}`, `{"error":"A fájl túl nagy (max. 15 MB)"}`; 500 `{"error":"A fájltárolás nincs beállítva"}`.
-
----
-
-### `DELETE /api/documents/[id]/attachments/[attachmentId]`
-
-**Why:** Removes an attachment from a document that is still editable, deleting the underlying R2 object too.
-
-**Auth:** Session cookie or bearer, plus `ACCESS_DOCUMENTS`, must be the author, document must be DRAFT or REJECTED.
-
-**Request:** Path params `id`, `attachmentId`. No body.
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/documents/doc_1/attachments/att_1"
-```
-
-**Response:**
-
-```json
-{ "ok": true }
-```
-Errors: 403 `{"error":"Csak a készítő törölheti"}`; 409 `{"error":"Beküldött dokumentum melléklete nem törölhető"}`; 404 `{"error":"A melléklet nem található"}`.
-
-## Exam Slots, Exams, Game Client, Leaderboard, Map, News, Payment Webhooks, Profiles
-
-### `GET /api/exam-slots`
-
-**Why:** Lists the closing-exam time slots a trainee may currently register for or is already registered on, restricted to branches where they are an active trainee (and have finished any required training material).
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/exam-slots" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-[
-  {
-    "id": "slot_123",
-    "scheduledAt": "2026-09-14T18:00:00.000Z",
-    "status": "SCHEDULED",
-    "exam": { "title": "Driver Closing Exam", "trainingBranch": "DRIVER" },
-    "_count": { "registrations": 3 },
-    "isRegistered": true,
-    "attended": null,
-    "calendarToken": "a1b2c3..."
-  }
-]
-```
-Empty array `[]` when the member is not an eligible trainee in any branch.
-
----
-
-### `GET /api/exam-slots/cancel/[token]`
-
-**Why:** Lets a trainee (or the confirmation email's link) check the details of a slot registration before cancelling it, without requiring login.
-
-**Auth:** token-in-URL (the registration's `cancelToken`, the same token as the confirmation email and the calendar link). No session needed. `GET` only reads — an email client's link-prefetch cannot cancel by itself.
-
-**Request:** `token` path param.
-
-```bash
-curl -sS "$HSR_URL/api/exam-slots/cancel/$TOKEN"
+curl -sS -X POST "$HSR_URL/api/push/duty-reminders" -H "Authorization: Bearer $CRON_SECRET"
 ```
 
 **Response:**
 ```json
 {
-  "examTitle": "Driver Closing Exam",
-  "scheduledAt": "2026-09-14T18:00:00.000Z",
-  "slotStatus": "SCHEDULED",
-  "alreadyCancelled": false
+  "success": true,
+  "remindersSent": ["János Kovács (30 min)", "Péter Nagy (10 min)"],
+  "timestamp": "2026-09-13T07:00:00.000Z"
 }
 ```
-`404` if the token does not resolve to a registration.
+For `DRIVER` requests, the reminder time is the train's origin departure time (`originDepartureTime()`, direction-aware for return workings); for `DISPATCHER` requests it defaults to 08:00 (no per-request start time is stored). Sends via `sendDutyReminder()`; a failure to send one reminder is caught and logged, not fatal to the run. Every reminder sent is recorded (`DutyReminderSent`), so the minute-ly schedule cannot send one twice. Errors: 401 `"Unauthorized"` (missing/wrong `CRON_SECRET`); 500 `"Failed to process reminders"`.
 
 ---
 
-### `DELETE /api/exam-slots/cancel/[token]`
+### `POST /api/cron/discord-scheduled`
 
-**Why:** The actual cancel action, fired by the button on the public cancel page.
+**Why:** Posts the Discord embeds scheduled from the embed builder (`/api/admin/discord/scheduled`) once they are due. Failed sends are retried on a backoff.
 
-**Auth:** token-in-URL (`cancelToken`), no login required.
-
-**Request:** `token` path param, no body.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** every minute.
 
 ```bash
-curl -sS -X DELETE "$HSR_URL/api/exam-slots/cancel/$TOKEN"
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/discord-scheduled"
 ```
 
-**Response:** `{ "ok": true }`. `404` if not found; `400 "This slot can no longer be cancelled"` if the slot is no longer `SCHEDULED` (already active/closed).
+**Response:** `{ "success": true, "sent": 1, "failed": 0, "retried": 0, … }`.
 
 ---
 
-### `GET /api/exam-slots/calendar/[token]`
+### `POST /api/cron/delay-refresh`
 
-**Why:** Serves the slot as a downloadable `.ics` calendar file, keyed by the registration's own token, so the confirmation email's "add to calendar" button works from a phone that isn't signed in.
+**Why:** Delay detection: opens a Discord announcement for each train running later (or earlier) than the thresholds in `/api/admin/delay-settings`, keeps the message's delay up to date, and clears it once the train is back on time.
 
-**Auth:** token-in-URL (`cancelToken`), public.
-
-**Request:** `token` path param.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** every 2 minutes.
 
 ```bash
-curl -sS "$HSR_URL/api/exam-slots/calendar/$TOKEN" -o exam.ics
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/delay-refresh"
 ```
 
-**Response:** `Content-Type: text/calendar; charset=utf-8`, `Content-Disposition: attachment; filename="hsr-vizsga-2026-09-14.ics"`. The event covers the `EXAM_SLOT_WINDOW_MINUTES` (60) window from `scheduledAt`, not the exam's own duration. `404 "Not found"` (plain text) if the token doesn't resolve.
+**Response:** `{ "checked": 4, "edited": 2, "cleared": 1 }` — all zero while delay detection is off or has no channel.
 
 ---
 
-### `POST /api/exam-slots/[id]/register`
+### `POST /api/cron/employee-of-period`
 
-**Why:** Registers the signed-in trainee onto a scheduled closing-exam slot and emails a confirmation with cancel/calendar links.
+**Why:** Decides the employee of the week and of the month once the period has closed (idempotent: a period already decided is skipped).
 
-**Auth:** session/bearer (`requireAuth`), plus the caller must hold the branch's trainee role and (if the programme has material) have completed it.
-
-**Request:** `id` path param (slot id), no body.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** hourly at :25.
 
 ```bash
-curl -sS -X POST "$HSR_URL/api/exam-slots/slot_123/register" \
-  -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/employee-of-period"
 ```
 
-**Response:** `{ "ok": true }`, or `{ "ok": true, "alreadyRegistered": true }` on a repeat call (idempotent, no duplicate email). Errors: `400 { "code": "slotUnavailable" }` (slot missing or not `SCHEDULED`), `403 { "code": "notTrainee" }`, `403 { "code": "materialIncomplete" }`.
+**Response:** `{ "success": true, "results": [ { …week… }, { …month… } ] }`.
 
 ---
 
-### `DELETE /api/exam-slots/[id]/register`
+### `POST /api/cron/league-season`
 
-**Why:** Lets the signed-in trainee withdraw their own registration from the dashboard (as opposed to the emailed token link).
+**Why:** Closes the division league season when it ends: final standings, promotions and relegations.
 
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** `id` path param (slot id), no body.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** hourly at :40 (does nothing mid-season).
 
 ```bash
-curl -sS -X DELETE "$HSR_URL/api/exam-slots/slot_123/register" \
-  -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/league-season"
 ```
 
-**Response:** `{ "ok": true }` (always succeeds even if no registration existed — `deleteMany`).
+**Response:** `{ "success": true, … }` with the season decision.
 
 ---
 
-### `GET /api/exams`
+### `POST /api/cron/leadership-digest`
 
-**Why:** Lists the exams (including application forms) the signed-in member may currently take, filtering out ones they've passed, ones they're blacklisted/cooldown-blocked from, and closing exams they aren't registered on an active slot for. Titles/descriptions are machine-translated to the reader's locale.
+**Why:** The Monday leadership digest: last week's operations, membership, training, support, compliance and moderation numbers against the week before, emailed to everyone with `VIEW_STATISTICS` or `MANAGE_DUTY` (subject to their "Staff reports" notification setting).
 
-**Auth:** session/bearer (`requireAuth`).
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** Mondays 07:00.
 
-**Request:** No parameters.
+**Request:** Query `dry=1` builds the digest and returns it without sending anything.
 
 ```bash
-curl -sS "$HSR_URL/api/exams" -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/leadership-digest?dry=1"
 ```
 
-**Response:**
-```json
-[
-  {
-    "id": "exam_1",
-    "title": "Driver Closing Exam",
-    "description": "...",
-    "timeLimitMode": "TOTAL",
-    "timeLimitSeconds": 3600,
-    "passingScore": 80,
-    "exitIsViolation": true,
-    "audience": "CLOSING_EXAM",
-    "isApplicationForm": false,
-    "applicationFormType": null,
-    "questionCount": 20,
-    "randomQuestionCount": 15,
-    "hasActiveAttempt": false,
-    "canStart": true,
-    "lastAttempt": null,
-    "translation": { "sourceLang": "hu" }
-  }
-]
-```
+**Response:** `{ "success": true, "week": "2026-10-05 – 2026-10-11", "recipients": 6, "queued": 6 }`, or `{ "success": true, "dry": true, "digest": {…} }`.
 
 ---
 
-### `GET /api/exams/eligibility`
+### `POST /api/cron/supervision-sla`
 
-**Why:** Tells the member *why* application forms are missing from `/api/exams` (account-wide blacklist/ban, or a per-programme reapplication cooldown) — kept separate so the bare-array `GET /api/exams` contract used by web and mobile is not broken.
+**Why:** Enforces the supervision claim rules: reminds instructors about requests nobody has claimed, flags breaches to the head of instructors, and hands back claims that were never started (the trainee is told by email and Discord DM).
 
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** hourly at :50.
 
 ```bash
-curl -sS "$HSR_URL/api/exams/eligibility" -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/supervision-sla"
 ```
 
-**Response:**
-```json
-{ "blocked": false, "notices": ["A(z) Driver képzésre 2026. október 1. után jelentkezhetsz újra."] }
-```
-or `{ "blocked": true, "message": "...", "notices": [] }` when account-wide blocked.
+**Response:** `{ "success": true, "reminded": 1, "breached": 0, "claimsExpired": 0, "skipped": null }` — `skipped: "claiming disabled"` when claiming is switched off.
 
 ---
 
-### `POST /api/exams/[id]/draft`
+### `POST /api/cron/forum-maintenance`
 
-**Why:** Autosaves the in-progress answer for the current question, used when `exitIsViolation` is false so a page refresh doesn't lose typed work.
+**Why:** Nightly forum housekeeping: deletes abandoned uploads, decays topic interest scores, prunes old notifications (read after 7 days, unread after 30) and "seen" markers, and recomputes the hot score of the last 30 days' posts.
 
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body: `questionId` (string, optional), `answer` (any, optional). Requires an `IN_PROGRESS` attempt for the exam.
+**Auth:** `x-api-key: $CRON_API_KEY`. **Schedule:** daily 04:15.
 
 ```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/draft" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"questionId":"q1","answer":"B"}'
+curl -sS -X POST -H "x-api-key: $CRON_API_KEY" "$HSR_URL/api/cron/forum-maintenance"
 ```
 
-**Response:** `{ "success": true }`. `404 "No active attempt"` if none in progress.
+**Response:** `{ "media": {…}, "affinity": {…}, "notifications": {…}, "seen": {…}, "rescored": 120 }`.
 
----
+## Server-to-server: Game Server
 
-### `POST /api/exams/[id]/answer`
-
-**Why:** Submits the answer for the exam's current question, auto-grades multiple-choice, advances the attempt pointer, and returns the next (translated) question.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body: `questionId` (string, required), `answer` (string, required for MC — must be one of the option keys). Server re-checks the per-total or per-question time limit (5s grace).
-
-```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/answer" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"questionId":"q1","answer":"B"}'
-```
-
-**Response:**
-```json
-{
-  "completed": false,
-  "currentQuestionIndex": 1,
-  "nextQuestion": { "id": "q2", "type": "MULTIPLE_CHOICE", "questionText": "...", "options": {"A":"...","B":"..."}, "points": 5, "timeLimitSeconds": null }
-}
-```
-`{ "completed": true, "nextQuestion": null }` on the last question. Errors: `404 "No active attempt"`, `400 "Time expired", "timedOut": true, "timedOutType": "TOTAL"`, `400 "Question time expired"`, `400 "Invalid option..."`, `400 "Question is not the current question"`.
-
----
-
-### `POST /api/exams/[id]/complete`
-
-**Why:** Finalizes an in-progress attempt: scores it (auto-pass/fail if fully MC), fires the closing-exam finalize pipeline (rank grants, result email) when applicable, and logs the completion.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** `id` path param, no body.
-
-```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/complete" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{ "score": 86.5, "passed": true, "totalPoints": 100, "earnedPoints": 86, "needsReview": false }
-```
-`passed: null` and `needsReview: true` when TEXT/IMAGE answers still need admin grading. `404 "No active attempt"` / `"Exam not found"` on failure.
-
----
-
-### `POST /api/exams/[id]/start`
-
-**Why:** Starts (or resumes) an exam attempt for the signed-in member: enforces eligibility (role, closing-exam slot registration, application-form blacklist/membership/cooldown), builds the question set (optionally a random subset), and returns the first (translated) question.
-
-**Auth:** session/bearer (`requireAuth`), rate-limited (`apiLimiter`, key `exam-start:<userId>`).
-
-**Request:** `id` path param, no body.
-
-```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/start" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{
-  "attemptId": "attempt_1",
-  "currentQuestionIndex": 0,
-  "totalQuestions": 15,
-  "timeLimitMode": "TOTAL",
-  "timeLimitSeconds": 3600,
-  "exitIsViolation": true,
-  "startedAt": "2026-09-13T18:00:00.000Z",
-  "draftAnswer": null,
-  "question": { "id": "q1", "type": "MULTIPLE_CHOICE", "questionText": "...", "options": {"A":"..."}, "points": 5, "timeLimitSeconds": null }
-}
-```
-Errors: `404 "Exam not available"`, `403 "You are not allowed to take this exam"`, `403 "You are not registered for an active time slot"` (CLOSING_EXAM), `403` blacklist/membership/cooldown messages, `400 "Exam has no questions"`, `400 "You have already passed this exam."`, `400 "Your previous attempt must be archived before retrying."`, `400 "Your previous attempt is still under review."`.
-
----
-
-### `POST /api/exams/[id]/skip`
-
-**Why:** Skips the current question (records it as unanswered, zero points) and advances to the next.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** `id` path param, no body.
-
-```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/skip" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** Same shape as `answer` — `{ "completed": false, "currentQuestionIndex": 1, "nextQuestion": {...} }` or `{ "completed": true, "nextQuestion": null }`. `404 "No active attempt"`, `400 "No current question"`, `400 "Invalid question"`.
-
----
-
-### `POST /api/exams/[id]/violation`
-
-**Why:** Records a proctoring violation (e.g. tab switch/focus loss) when `exam.exitIsViolation` is enabled, immediately failing the attempt.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body: `reason` (string, optional, defaults to `"Left the exam page"`).
-
-```bash
-curl -sS -X POST "$HSR_URL/api/exams/exam_1/violation" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"reason":"Tab switched"}'
-```
-
-**Response:** `{ "success": true }`, or `{ "ignored": true }` if the exam doesn't treat exits as violations. `404 "No active attempt"` if none in progress.
-
----
+Called by the Roblox game server with `x-api-key: $GAME_API_KEY`. Not for clients: the key would let anyone write game events.
 
 ### `POST /api/game` (action dispatch)
 
@@ -8163,123 +10897,9 @@ curl -sS "$HSR_URL/api/game/radio/poll?serverId=srv-1&since=2026-09-13T18:00:00Z
 ```
 `400` missing/invalid `serverId`/`since`.
 
----
+## Server-to-server: Payment and Fulfilment Webhooks
 
-### `GET /api/instructor/me`
-
-**Why:** An instructor's own weekly quota progress (supervision credits/sessions), derived read-only from the supervisions they ran.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/instructor/me" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{
-  "isInstructor": true,
-  "weekStart": "2026-09-07T00:00:00.000Z",
-  "weekEnd": "2026-09-13T23:59:59.999Z",
-  "row": { "userId": "...", "credits": 3, "sessions": 2, "..." : "..." },
-  "rules": { "requiredCredits": 4, "requiredSessions": 2 }
-}
-```
-`{ "isInstructor": false }` for a non-instructor or a leadership-tier holder excluded from the list.
-
----
-
-### `GET /api/leaderboard/[type]`
-
-**Why:** Public leaderboard for one of the tracked stats, with the caller's own rank included if signed in.
-
-**Auth:** public for the list; session/bearer optional (adds `userRank` when present).
-
-**Request:** `type` path param — one of `xp`, `distance`, `playtime`, `trains_driven`. Query params: `limit` (default 50, max 100), `offset` (default 0).
-
-```bash
-curl -sS "$HSR_URL/api/leaderboard/xp?limit=20&offset=0"
-```
-
-**Response:**
-```json
-{
-  "leaderboard": [{ "rank": 1, "userId": "u1", "name": "Foo", "displayName": "Foo", "image": null, "steamId": null, "value": 15230, "level": 12 }],
-  "total": 480,
-  "userRank": 37
-}
-```
-`400 "Invalid leaderboard type..."` for an unknown `type`.
-
----
-
-### `GET /api/maintenance-status`
-
-**Why:** Public, unauthenticated check the `/maintenance` page uses to display the admin's custom message even to users locked out of every admin-gated route.
-
-**Auth:** public.
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/maintenance-status"
-```
-
-**Response:** `{ "enabled": false, "message": null }`.
-
----
-
-### `GET /api/map/snapshot`
-
-**Why:** One-shot fetch of the live driver-position map data (for a client that doesn't want an SSE connection).
-
-**Auth:** session/bearer (`getSessionWithBearer`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/map/snapshot" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `getLiveMapData()`'s shape — an array/object of live driver positions and metadata; `[]` on an internal error rather than a 500, and `no-store` cache headers. `401` if unauthenticated.
-
----
-
-### `GET /api/map/live`
-
-**Why:** SSE stream of the same live map data, pushed every 10 seconds, for a persistent live-updating view.
-
-**Auth:** session/bearer (`getSessionWithBearer`).
-
-**Request:** No parameters. Standard `EventSource` GET.
-
-```bash
-curl -sS -N "$HSR_URL/api/map/live" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `text/event-stream`; each event's `data` is a JSON payload from `getLiveMapData()`, sent immediately then every 10s. `401` (plain `Response`) if no session.
-
----
-
-### `POST /api/missed-assignment-appeal/[id]`
-
-**Why:** Lets a driver/dispatcher appeal a missed-assignment strike via a one-time token from their notification, emailing every admin so the appeal can be reviewed.
-
-**Auth:** session/bearer (`getSessionWithBearer`) **and** a token-in-body matching the assignment's `appealToken` (single-use — cleared on submit). The caller must also own the assignment (`assignment.userId === session.id`).
-
-**Request:** `id` path param (missed assignment id). JSON body: `token` (string, required), `message` (string, required).
-
-```bash
-curl -sS -X POST "$HSR_URL/api/missed-assignment-appeal/assign_1" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"token":"abc123","message":"I was disconnected mid-shift."}'
-```
-
-**Response:** `{ "success": true, "appealId": "appeal_1" }`. Errors: `401` unauthenticated, `404 "Assignment not found"`, `403 "You can only submit your own appeal"` / `"Invalid token"`, `410 "Appeal deadline has passed"`, `409 "Appeal already submitted"`.
-
----
+Called by Stripe and Printful. Each request is authenticated by its signature header, not by a session; a request with a bad signature is refused before anything is read.
 
 ### `POST /api/polar/webhook` (Stripe checkout webhook, despite the path name)
 
@@ -8296,24 +10916,6 @@ curl -sS -X POST "$HSR_URL/api/polar/webhook" \
 ```
 
 **Response:** `{ "received": true }` for any handled or ignored event type. Side effect: `session.metadata.type === "shop"` calls `finalizeShopOrderByCheckoutId()`; otherwise calls `finalizeDonationByCheckoutId()` using `session.metadata.userId`. `400 "Missing webhook signature/secret"` / `"Invalid signature"` on verification failure.
-
----
-
-### `POST /api/polar/checkout`
-
-**Why:** Creates a Stripe Checkout session for a one-off HUF donation and records a pending `Donation` row.
-
-**Auth:** session/bearer (`getSessionWithBearer`).
-
-**Request:** JSON body: `amount` (number, required, minimum 175 HUF).
-
-```bash
-curl -sS -X POST "$HSR_URL/api/polar/checkout" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"amount":2000}'
-```
-
-**Response:** `{ "url": "https://checkout.stripe.com/..." }`. `401` unauthenticated, `400 "Érvénytelen összeg (minimum 175 Ft)"` for an invalid amount.
 
 ---
 
@@ -8335,926 +10937,6 @@ curl -sS -X POST "$HSR_URL/api/printful/webhook" \
 
 ---
 
-### `GET /api/profile/praise`
-
-**Why:** Answers "have I already thanked this colleague?" for the praise dialog on their profile, plus the list of praise reasons to offer.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** Query param `userId` (optional — the colleague being viewed).
-
-```bash
-curl -sS "$HSR_URL/api/profile/praise?userId=u2" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `{ "reasons": ["helpful", "friendly", "..."], "alreadyPraised": false }`.
-
----
-
-### `POST /api/profile/praise`
-
-**Why:** Gives a "+1" to a colleague worked with in the last `PRAISE_WINDOW_HOURS`, then re-syncs both members' badges immediately (a threshold may have just been crossed).
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body: `toUserId` (string, required), `reason` (string, optional), `message` (string, optional).
-
-```bash
-curl -sS -X POST "$HSR_URL/api/profile/praise" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"toUserId":"u2","reason":"helpful","message":"Thanks for the assist!"}'
-```
-
-**Response:** `{ "ok": true, "id": "praise_1" }`. Errors: `400 "SELF"` / `"INVALID"`, `409 "ALREADY_PRAISED"`.
-
----
-
-### `GET /api/profile/weekly-duty`
-
-**Why:** The signed-in member's progress toward their weekly duty-hour minimum (prorated for approved leave), plus their active/recent weekly-duty strikes and whether they're appealable.
-
-**Auth:** session/bearer (`getSessionWithBearer`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/profile/weekly-duty" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{
-  "weekStart": "2026-09-07T00:00:00.000Z",
-  "weekEnd": "2026-09-13T23:59:59.999Z",
-  "minimumSeconds": 21600,
-  "minimumHours": 6,
-  "totalSeconds": 10800,
-  "totalHours": 3,
-  "progressPercent": 50,
-  "isEligible": true,
-  "isExempted": false,
-  "canDrive": true,
-  "canDispatch": false,
-  "canInspect": false,
-  "activeStrike": null,
-  "recentStrikes": []
-}
-```
-`401` unauthenticated, `404 "User not found"`.
-
----
-
-### `GET /api/profile/locomotives`
-
-**Why:** Feeds the "favourite locomotive" picker in the profile editor with the locomotive chip pool (number + photo) — a shortcut, not the exhaustive set of valid answers (a free-text field also exists).
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/profile/locomotives" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `{ "chips": [{ "id": "c1", "number": "V63 001", "imageUrl": "https://...", "operator": "MÁV" }] }`.
-
----
-
-### `GET /api/profile/me`
-
-**Why:** The signed-in member's own profile, including sections they've hidden from the public (`includeHidden: true`), plus the banner presets and whether Spotify linking is available.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/profile/me" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `{ "profile": {...ProfileView}, "spotifyAvailable": true, "bannerPresets": [...] }`. `404 "Profile not found"` (should not normally happen — `ensureProfile()` elsewhere creates it).
-
----
-
-### `PATCH /api/profile/me`
-
-**Why:** Edits the signed-in member's own profile fields (handle, motto, accent colour, banner preset/framing, favourite locomotive, visibility, section toggles). Every rule is re-validated server-side since the editor is a form a `fetch` call can skip.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body, all fields optional (absent = unchanged, `null` = clear): `handle` (string|null), `motto` (string|null, ≤`MOTTO_MAX_LENGTH`), `accentColor` (hex string|null), `bannerPreset` (string key|null), `bannerPosX`/`bannerPosY`/`bannerZoom` (number, clamped), `favoriteLocomotive` (string|null), `favoriteChipId` (string|null), `visibility` (`PUBLIC`|`MEMBERS`|`PRIVATE`), `showStats`/`showBadges`/`showSpotify`/`showPraise` (boolean).
-
-```bash
-curl -sS -X PATCH "$HSR_URL/api/profile/me" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"motto":"Always on time","visibility":"PUBLIC"}'
-```
-
-**Response:** `{ "profile": {...updated ProfileView} }`. Errors: `400 "handleFormat"` / `"handleReserved"` / `"accentInvalid"` / `"bannerInvalid"` / `"visibilityInvalid"` / `"Nothing to update"`, `404 "chipNotFound"`, `409 "handleTaken"`.
-
----
-
-### `GET /api/profile/stats`
-
-**Why:** The dashboard's own duty/game-activity stats for the signed-in member — today/week/month/all-time duty minutes and game joins, a 7-day activity chart, and their monthly duty-count leaderboard rank.
-
-**Auth:** session/bearer (`getSessionWithBearer`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/profile/stats" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{
-  "today": { "duties": 1, "completedDuties": 1, "activeDuty": false, "totalMinutes": 120, "gameJoins": 2 },
-  "week": { "duties": 4, "totalMinutes": 480, "gameJoins": 6 },
-  "month": { "duties": 12, "totalMinutes": 1440, "gameJoins": 20, "byType": { "trainDriver": 8, "trainDispatcher": 4 } },
-  "allTime": { "duties": 130, "gameJoins": 210 },
-  "activeDuty": null,
-  "leaderboardRank": 5,
-  "chart": [{ "date": "2026-09-07", "duties": 1, "gameJoins": 1, "minutes": 90 }]
-}
-```
-`401` unauthenticated.
-
----
-
-### `GET /api/profiles/[handle]`
-
-**Why:** The public member profile page's data — resolves a handle, id, or Roblox/Discord name to a user and returns their `ProfileView`, respecting the per-profile visibility setting.
-
-**Auth:** public by default (visibility `PUBLIC`); session/bearer required to view a `MEMBERS`/`PRIVATE` profile the caller doesn't own or doesn't have `MANAGE_USERS` for.
-
-**Request:** `handle` path param (a claimed handle, a user id, or the Roblox/Discord display name).
-
-```bash
-curl -sS "$HSR_URL/api/profiles/johndoe"
-```
-
-**Response:** `{ "profile": {...ProfileView}, "isOwner": false }`. `404 "Profile not found"`, `403 "This profile is private"`.
-
----
-
-### `GET /api/profiles/[handle]/spotify`
-
-**Why:** "Most ezt hallgatja" now-playing card, polled while a profile page is open. Every no-data case (no link, section off, private profile, Spotify down) collapses to the same `nowPlaying: null` shape rather than an error.
-
-**Auth:** public for a `PUBLIC` profile with Spotify visible; session/bearer required for a non-public profile (and must be the owner for `PRIVATE`).
-
-**Request:** `handle` path param.
-
-```bash
-curl -sS "$HSR_URL/api/profiles/johndoe/spotify"
-```
-
-**Response:** `{ "nowPlaying": { "track": "...", "artist": "...", "albumArt": "...", "isPlaying": true } }` or `{ "nowPlaying": null }`.
-
----
-
-### `DELETE /api/profile/me/spotify`
-
-**Why:** Unlinks the signed-in member's Spotify account by clearing the stored refresh token (never just a flag, so "unlinked" and "still holds a token" can't disagree).
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No body.
-
-```bash
-curl -sS -X DELETE "$HSR_URL/api/profile/me/spotify" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `{ "ok": true }`.
-
----
-
-### `GET /api/profile/me/badges`
-
-**Why:** The signed-in member's badge shelf: held badges (with pin state) and the not-yet-held catalogue with progress bars toward automatic rules. Also re-syncs automatic badges on load.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/profile/me/badges" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:**
-```json
-{
-  "held": [{ "id": "b1", "key": "jo-kolega", "name": "Jó kolléga", "nameEn": "Good Colleague", "imageUrl": null, "emoji": "🤝", "rarity": "COMMON", "category": "SOCIAL", "pinned": true, "awardedAt": "2026-01-01T00:00:00.000Z", "reason": null }],
-  "available": [{ "id": "b2", "key": "veteran", "name": "Veterán", "progress": { "current": 400, "threshold": 1000 } }],
-  "maxPinned": 3
-}
-```
-
----
-
-### `PATCH /api/profile/me/badges`
-
-**Why:** Sets which held badges are pinned above the rest (whole set replaced at once, so the client can't bypass the pin cap).
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** JSON body: `pinned` (array of badge ids, ≤`MAX_PINNED_BADGES`, must all be badges the member holds).
-
-```bash
-curl -sS -X PATCH "$HSR_URL/api/profile/me/badges" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"pinned":["b1","b2"]}'
-```
-
-**Response:** `{ "ok": true, "pinned": ["b1","b2"] }`. `400 "tooManyPinned"` / `"notHeld"`.
-
----
-
-### `POST /api/profile/me/banner`
-
-**Why:** Uploads a custom banner image to R2 for the profile header, replacing any preset and deleting the previous uploaded file (best-effort, after the new one is live).
-
-**Auth:** session/bearer (`requireAuth`); requires R2 configured.
-
-**Request:** `multipart/form-data` with a `file` field — image/jpeg, image/png, image/webp or image/gif, ≤5MB.
-
-```bash
-curl -sS -X POST "$HSR_URL/api/profile/me/banner" \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@banner.jpg;type=image/jpeg"
-```
-
-**Response:** `{ "bannerUrl": "https://s3.hsrgames.hu/profile-banners/<userId>/<uuid>.jpg" }`. `503 "Storage not configured"`, `400 "No file provided"` / `"bannerType"` / `"bannerTooLarge"`.
-
----
-
-### `DELETE /api/profile/me/banner`
-
-**Why:** Reverts the profile banner to a preset, deleting the uploaded object since nothing references it any more.
-
-**Auth:** session/bearer (`requireAuth`).
-
-**Request:** No body.
-
-```bash
-curl -sS -X DELETE "$HSR_URL/api/profile/me/banner" -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `{ "ok": true }`.
-
----
-
-### `GET /api/news`
-
-**Why:** Public homepage news feed, mirrored from a Discord channel; re-syncs itself if the mirror is stale (>1 hour) rather than relying solely on the cron.
-
-**Auth:** public.
-
-**Request:** Query param `limit` (optional, default 6, clamped 1–20).
-
-```bash
-curl -sS "$HSR_URL/api/news?limit=6"
-```
-
-**Response:** `{ "items": [{ "id": "1234567890", "title": "...", "summary": "...", "publishedAt": "2026-09-10T12:00:00.000Z" }] }`. `500 "Failed to fetch news"` on unexpected error.
-
----
-
-### `GET /api/roblox/stats`
-
-**Why:** Public live game stats (players online, visits, favorites, votes) pulled from the Roblox public APIs for the homepage.
-
-**Auth:** public.
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/roblox/stats"
-```
-
-**Response:** `{ "playing": 42, "visits": 1500000, "favorites": 12000, "maxPlayers": 50, "upVotes": 900, "downVotes": 20 }`, cached `s-maxage=30`. `502 "Could not resolve universe"` / `"Roblox API unavailable"`, `404 "Game not found"`, `500 "Internal error"`.
-
-## Route Permits, Schedule, Search, Sessions, Shop, Stripe
-
-### `GET /api/route-permit`
-
-**Why:** Lists a driver's or dispatcher's own route permits (driver requests a permit from a dispatcher before running a service) plus, for a dispatcher, the incoming pending permits waiting on their approval. An admin-panel user sees everything.
-
-**Auth:** session (`requireAuth()`). No extra flag — visibility is scoped to `driverId`/`dispatcherId` matching the caller, unless `permissions.canViewAdminPanel()` is true, in which case every permit is returned.
-
-**Request:** no parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/route-permit"
-```
-
-**Response:**
-```json
-{
-  "mine": [
-    {
-      "id": "clx1...",
-      "driverId": "clu9...",
-      "dispatcherId": "clu8...",
-      "trainId": "clt1...",
-      "pairGroup": "IC-101",
-      "locomotiveNumber": "V63 001",
-      "departureStation": "Budapest",
-      "arrivalStation": "Győr",
-      "trainName": "IC 101",
-      "status": "PENDING",
-      "deletedByDriver": false,
-      "deletedByFszt": false,
-      "createdAt": "2026-09-13T05:00:00.000Z",
-      "driver": { "id": "clu9...", "displayName": "Kovács János", "name": "kovacs", "discordUsername": "kovacs#0" },
-      "dispatcher": { "id": "clu8...", "displayName": "Nagy Éva", "name": "nagy" },
-      "train": { "id": "clt1...", "trainNumber": "101", "trainType": "IC", "pairGroup": "IC-101", "fordaGroup": null, "stops": [] }
-    }
-  ],
-  "incoming": []
-}
-```
-
----
-
-### `POST /api/route-permit`
-
-**Why:** A driver requests a route permit from a named dispatcher before starting a service. Departure/arrival stations are auto-derived from the train's own stops (accounting for direction) rather than trusted from the client.
-
-**Auth:** session; requires `permissions.canDrive()` (`CAN_DRIVE`), otherwise 403.
-
-**Request:** JSON body — `trainId` (string, required), `pairGroup` (string, required), `locomotiveNumber` (string, required), `trainName` (string, required), `dispatcherId` (string, required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"trainId":"clt1...","pairGroup":"IC-101","locomotiveNumber":"V63 001","trainName":"IC 101","dispatcherId":"clu8..."}' \
-  "$HSR_URL/api/route-permit"
-```
-
-**Response:** `201` with the created permit row. `400` if any required field is missing. Emits a real-time update to the named dispatcher via `emitPermitUpdate()`.
-```json
-{ "id": "clx2...", "driverId": "clu9...", "dispatcherId": "clu8...", "trainId": "clt1...", "status": "PENDING", "...": "..." }
-```
-
----
-
-### `PATCH /api/route-permit/[id]`
-
-**Why:** The three permit lifecycle actions — a dispatcher approving a permit, and either side removing it from their own view.
-
-**Auth:** session. `approve` and `delete_fszt` require the caller to be the permit's `dispatcherId` (or an admin-panel user); `delete_driver` requires the caller to be the permit's `driverId` (or an admin-panel user).
-
-**Request:** JSON body — `action`: `"approve" | "delete_driver" | "delete_fszt"` (required).
-
-```bash
-curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"action":"approve"}' \
-  "$HSR_URL/api/route-permit/clx2..."
-```
-
-**Response:** `approve` returns the updated permit (status `APPROVED`) and pushes an update to the driver via `emitPermitUpdate()`. `delete_driver`/`delete_fszt` set `deletedByDriver`/`deletedByFszt` (soft delete — the row stays for the other side) and return `{ "ok": true }`. `404` if the permit does not exist, `403` on ownership mismatch, `400` on an unrecognized `action`.
-
----
-
-### `GET /api/route-permit/stream`
-
-**Why:** Real-time push so a driver's or dispatcher's permit list refreshes without polling — sent as a bare "update" event that tells the client to re-fetch `/api/route-permit`, not the row itself.
-
-**Auth:** session (`requireAuth()`).
-
-**Request:** no parameters. Built with `createSSEResponse()` per the repo's SSE convention.
-
-```bash
-curl -sS -N -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/route-permit/stream"
-```
-
-**Response:** SSE stream. Each event is simply the literal data `update`, emitted whenever `emitPermitUpdate(userId)` fires for the connected user (on permit create/approve). The client treats it as "something changed, refetch."
-```
-data: update
-
-```
-
----
-
-### `GET /api/schedule-request/available`
-
-**Why:** Feeds the booking form with the trains (driver) or stations (dispatcher) still bookable for a given date — filtering out what the caller already booked, what's booked by someone else, what's already assigned to a duty, what requires a locomotive-type role the caller lacks, operator (MAV/GYSEV) mismatches, and — for today only — trains that have already departed.
-
-**Auth:** session (`requireAuth()`). No extra permission flag to *view* availability (booking itself is gated on `POST /api/schedule-request`).
-
-**Request:** query params — `date` (`YYYY-MM-DD`, required), `type` (`"DRIVER" | "DISPATCHER"`, optional — defaults to `DRIVER` behavior when omitted).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/schedule-request/available?date=2026-09-14&type=DRIVER"
-```
-
-**Response:**
-```json
-{
-  "type": "DRIVER",
-  "date": "2026-09-14T00:00:00.000Z",
-  "items": [
-    {
-      "id": "clt1...",
-      "trainNumber": "101",
-      "trainType": "IC",
-      "direction": 0,
-      "locomotiveNum": 1,
-      "locomotiveType": "V63",
-      "hasAC": true,
-      "isAvailable": true
-    }
-  ]
-}
-```
-`400` if `date` is missing or `type` is neither `DRIVER` nor `DISPATCHER`; `500` on unexpected failure.
-
----
-
-### `GET /api/schedule-request`
-
-**Why:** A member's own submitted schedule requests for a given month, for the dashboard's "my bookings" view.
-
-**Auth:** session.
-
-**Request:** query params — `year` (integer, optional, defaults to current year), `month` (1-12, optional, defaults to current month).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/schedule-request?year=2026&month=9"
-```
-
-**Response:** array of requests.
-```json
-[
-  {
-    "id": "clr1...",
-    "userId": "clu9...",
-    "requestType": "DRIVER",
-    "date": "2026-09-14T00:00:00.000Z",
-    "status": "PENDING",
-    "trainId": "clt1...",
-    "stationId": null,
-    "train": { "id": "clt1...", "trainNumber": "101", "trainType": "IC", "direction": 0 },
-    "station": null
-  }
-]
-```
-
----
-
-### `POST /api/schedule-request`
-
-**Why:** Submit a driver or dispatcher booking. Driver bookings are constrained to the open Mon–Sun booking window, checked for pair-level conflicts (a return train shares the outbound's slot), operator role, GYSEV eligibility, and — for members with unappealed weekly-duty strikes — capped at 3 bookings/week. Dispatcher bookings validate a station and an HH:MM time range. Same-day submissions are optionally auto-processed (`autoProcessSameDayRequest`) if the admin toggle is on.
-
-**Auth:** session; requires `permissions.canSubmitScheduleRequests()` (`SUBMIT_SCHEDULE_DRIVER` or `SUBMIT_SCHEDULE_DISPATCHER`), otherwise 403.
-
-**Request:** JSON body — `requestType` (`"DRIVER" | "DISPATCHER"`, required), `date` (`YYYY-MM-DD`, required). For `DRIVER`: `trainId` (string, required unless `isNonScheduledFreight`), `isNonScheduledFreight` (boolean, optional), `freightLabel` (string, required if freight, 2–100 chars), `note` (string, optional). For `DISPATCHER`: `stationId` (string, required), `dispatchStartTime`/`dispatchEndTime` (`HH:MM`, required, start < end), `note` (string, optional).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestType":"DRIVER","date":"2026-09-14","trainId":"clt1..."}' \
-  "$HSR_URL/api/schedule-request"
-```
-
-**Response:** `201` with the created (or same-day auto-assigned) request. Errors: `400` invalid type/date/past date/outside booking window/weekly cap reached/train departed/duplicate active request on the pair; `403` operator mismatch (GYSEV/MAV); `404` train or station not found.
-```json
-{ "id": "clr2...", "requestType": "DRIVER", "date": "2026-09-14T00:00:00.000Z", "status": "PENDING", "train": { "...": "..." }, "station": null }
-```
-
----
-
-### `DELETE /api/schedule-request`
-
-**Why:** Cancel one's own still-pending booking. A driver booking covers the whole train pair, so cancelling one side deletes the sibling pending request for the same pair/day too — otherwise the timetable would keep showing the driver on the half they didn't cancel.
-
-**Auth:** session; ownership enforced (`request.userId !== session.id` → 403).
-
-**Request:** query param — `id` (schedule request id, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/schedule-request?id=clr2..."
-```
-
-**Response:** `{ "success": true }`. `400` if `id` missing or the request is not `PENDING`; `404` if not found; `403` if not the owner.
-
----
-
-### `GET /api/schedule`
-
-**Why:** The public timetable — every active train with its stops, plus who's driving each (from today's duties and approved schedule requests, propagated across paired trains), and a per-train fulfillment status (`active`/`completed`/`not_fulfilled`/`pending`) computed against the train's first departure time.
-
-**Auth:** public — no auth call in this route at all.
-
-**Request:** no parameters.
-
-```bash
-curl -sS "$HSR_URL/api/schedule"
-```
-
-**Response:**
-```json
-{
-  "stations": [{ "id": "cls1...", "name": "Budapest", "km": 0, "order": 1 }],
-  "outboundTrains": [
-    {
-      "id": "clt1...",
-      "trainNumber": "101",
-      "trainType": "IC",
-      "direction": 0,
-      "driver": { "id": "clu9...", "displayName": "Kovács János", "name": "kovacs", "image": null },
-      "assignedDriver": { "id": "clu9...", "displayName": "Kovács János", "name": "kovacs", "image": null },
-      "dutyStatus": "active",
-      "stops": [{ "arrivalTime": null, "departureTime": "08:00", "station": { "...": "..." } }]
-    }
-  ],
-  "returnTrains": []
-}
-```
-
----
-
-### `GET /api/search`
-
-**Why:** The Command Palette's (⌘K) one endpoint. Filtering happens server-side, never in the client palette, because a member who may not open the user list must not be able to read names out of it by typing. Page results ask the same navigation permission checks the sidebars use (`src/lib/search/pages.ts`); member results apply the exact profile-visibility rule the profile page enforces (a `PRIVATE` profile or a banned account is invisible without `MANAGE_USERS`).
-
-**Auth:** session (`requireAuth()`).
-
-**Request:** query param — `q` (string, trimmed and capped at 64 chars; queries under 2 characters return an empty result set without querying anything).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/search?q=jarmu"
-```
-
-**Response:** results are capped at 6 per group (pages/wiki/members) and 20 total; `truncated` reports whether any group was cut.
-```json
-{
-  "query": "jarmu",
-  "results": [
-    { "id": "page:vehicles", "kind": "page", "title": "Járművek", "href": "/admin/locomotive-pool" },
-    { "id": "wiki:clw1...", "kind": "wiki", "title": "Járműismertető", "subtitle": "...", "badge": "Technika", "href": "/wiki/jarmuismerteto" },
-    { "id": "member:clu9...", "kind": "member", "title": "Kovács János", "subtitle": "Train Driver", "href": "/profile/kovacs" }
-  ],
-  "truncated": false
-}
-```
-
----
-
-### `GET /api/sessions`
-
-**Why:** Lists the caller's own active web and mobile sessions (for the "manage devices" settings page), marking which one is the current browser session.
-
-**Auth:** session.
-
-**Request:** no parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/sessions"
-```
-
-**Response:**
-```json
-[
-  {
-    "id": "clw1...",
-    "type": "web",
-    "deviceInfo": "Chrome on macOS",
-    "ipAddress": "203.0.113.4",
-    "lastUsedAt": "2026-09-13T09:00:00.000Z",
-    "createdAt": "2026-09-01T09:00:00.000Z",
-    "expiresAt": "2026-09-15T09:00:00.000Z",
-    "isCurrent": true
-  },
-  {
-    "id": "clm1...",
-    "type": "mobile",
-    "deviceInfo": "iPhone 15",
-    "ipAddress": null,
-    "lastUsedAt": "2026-09-12T10:00:00.000Z",
-    "createdAt": "2026-08-01T10:00:00.000Z",
-    "expiresAt": "2026-11-01T10:00:00.000Z",
-    "isCurrent": false
-  }
-]
-```
-
----
-
-### `DELETE /api/sessions`
-
-**Why:** Revoke one specific session (log out a specific device) — self-only, this is not an admin session-management endpoint.
-
-**Auth:** session; ownership is enforced by fetching the target session and comparing `userId` to the caller (404 rather than 403 if it belongs to someone else, to avoid confirming the id exists).
-
-**Request:** JSON body — `sessionId` (string, required), `type` (`"web" | "mobile"`, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"sessionId":"clm1...","type":"mobile"}' \
-  "$HSR_URL/api/sessions"
-```
-
-**Response:** `{ "success": true }`. `400` missing fields or invalid `type`; `404` session not found or not owned by the caller.
-
----
-
-### `POST /api/sessions/revoke-all`
-
-**Why:** "Log out everywhere else" — revokes every other web session and every mobile session, keeping the browser tab that made the request signed in.
-
-**Auth:** session; self-only by construction (`userId: session.id` on both update queries). The current web session id is excluded via `getWebSessionIdFromToken()`.
-
-**Request:** no body.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/sessions/revoke-all"
-```
-
-**Response:**
-```json
-{ "success": true, "revokedCount": 3 }
-```
-
----
-
-### `POST /api/shop/checkout`
-
-**Why:** Starts a Stripe Checkout session for a shop cart. Prices, stock and the shipping quote are re-verified server-side from the database rather than trusted from the client cart, and a pending `ShopOrder` is written before redirecting to Stripe so the webhook has something to finalize.
-
-**Auth:** session (`getSessionWithBearer()` — accepts cookie or bearer, so both web and mobile can check out).
-
-**Request:** JSON body — `items` (array of `{ productId: string, quantity: integer 1–100 }`, required, non-empty), `address` (`ShippingAddress`, required only if any item `isPhysical`), `quote` (`ShippingQuote`, required — must not be expired, i.e. `validUntil` in the future), `couponCode` (string, optional — validated as an active Stripe promotion code).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"items":[{"productId":"clp1...","quantity":1}],"quote":{"subtotalHuf":5000,"shippingFeeHuf":0,"vatFeeHuf":0,"service":null,"totalHuf":5000,"validUntil":1234567890000}}' \
-  "$HSR_URL/api/shop/checkout"
-```
-
-**Response:**
-```json
-{ "url": "https://checkout.stripe.com/c/pay/cs_test_..." }
-```
-Errors: `401` unauthenticated; `400` invalid items/expired quote/missing address for physical items/insufficient stock/total below Stripe's 175 HUF minimum/invalid coupon; `409` `{ "error": "quote_stale", "newQuote": { ... } }` when a re-quote for physical items differs from the submitted quote by more than 100 HUF.
-
----
-
-### `GET /api/shop/orders`
-
-**Why:** A member's own order history, including the Apple Wallet pass serial for any `APPLE_PASS` line item so the buyer can re-download it if the delivery email's attachment was stripped.
-
-**Auth:** session (`getSessionWithBearer()`).
-
-**Request:** no parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/shop/orders"
-```
-
-**Response:**
-```json
-[
-  {
-    "id": "clo1...",
-    "userId": "clu9...",
-    "status": "PAID",
-    "totalHuf": 5000,
-    "createdAt": "2026-09-10T12:00:00.000Z",
-    "items": [
-      {
-        "id": "cli1...",
-        "productId": "clp1...",
-        "quantity": 1,
-        "product": { "id": "clp1...", "nameHu": "HSR bögre", "nameEn": "HSR mug" },
-        "walletPass": null
-      }
-    ]
-  }
-]
-```
-
----
-
-### `GET /api/shop/orders/[id]`
-
-**Why:** A single order's detail view (line items with product images) for the order confirmation/detail page.
-
-**Auth:** session; ownership check — `order.userId !== session.id` returns 404 (not 403, so a stranger's order id doesn't confirm existence).
-
-**Request:** path param `id` (order id).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/shop/orders/clo1..."
-```
-
-**Response:**
-```json
-{
-  "id": "clo1...",
-  "userId": "clu9...",
-  "status": "PAID",
-  "items": [
-    {
-      "id": "cli1...",
-      "product": { "id": "clp1...", "nameHu": "HSR bögre", "images": [{ "url": "https://s3.hsrgames.hu/..." }] }
-    }
-  ]
-}
-```
-`404` if the order doesn't exist or isn't owned by the caller.
-
----
-
-### `GET /api/shop/passes/[serial]`
-
-**Why:** Re-download an issued Apple Wallet membership pass. Two authorization paths exist because the pass has to reach a phone that may not be logged into the site: the token printed in the delivery email/QR code, or an ordinary session belonging to the pass's owner. The card is re-rendered fresh from the member's current record (rank, avatar) on every download, keeping the same serial so Wallet replaces rather than duplicates it.
-
-**Auth:** owner-or-token — `token` query param compared with `timingSafeEqual()` against `pass.authToken`, OR a session/bearer whose `id` matches `pass.userId`.
-
-**Request:** path param `serial` (wallet pass serial number); query param `token` (optional, the pass's auth token).
-
-```bash
-curl -sS "$HSR_URL/api/shop/passes/PASS-000123?token=abcdef123..." -o pass.pkpass
-```
-
-**Response:** binary `.pkpass` file (`Content-Type: application/vnd.apple.pkpass`, `Content-Disposition: attachment`). Errors: `404` pass not found or voided; `401` neither token nor session matches; `503` Apple Wallet signing isn't configured (`applePassConfigured()` false).
-
----
-
-### `GET /api/shop/products/[id]`
-
-**Why:** Public product detail page — includes computed `availableStock` for `TRACKED` stock-mode products (stock minus reservations from pending carts).
-
-**Auth:** public.
-
-**Request:** path param `id` (product id). Only returns `active: true` products.
-
-```bash
-curl -sS "$HSR_URL/api/shop/products/clp1..."
-```
-
-**Response:**
-```json
-{
-  "id": "clp1...",
-  "nameHu": "HSR bögre",
-  "priceHuf": 5000,
-  "isPhysical": true,
-  "stockMode": "TRACKED",
-  "stock": 20,
-  "reservedStock": 3,
-  "availableStock": 17,
-  "images": [{ "url": "https://s3.hsrgames.hu/..." }]
-}
-```
-`404` if not found or inactive.
-
----
-
-### `GET /api/shop/products`
-
-**Why:** The shop's public product listing. `reservedStock` and `fulfillmentData` are stripped from the response — reservation counts and fulfillment payloads (which can carry internal delivery details, e.g. an `APPLE_PASS` config) are not meant for shoppers.
-
-**Auth:** public.
-
-**Request:** no parameters.
-
-```bash
-curl -sS "$HSR_URL/api/shop/products"
-```
-
-**Response:** array of active products with `availableStock` computed, `reservedStock`/`fulfillmentData` omitted.
-```json
-[
-  { "id": "clp1...", "nameHu": "HSR bögre", "priceHuf": 5000, "stockMode": "TRACKED", "stock": 20, "availableStock": 17, "images": [] }
-]
-```
-
----
-
-### `POST /api/shop/quote`
-
-**Why:** Computes a shipping quote (fee + VAT) for a cart and address before checkout, so the checkout screen can show a real total; re-run at checkout time to catch a stale quote.
-
-**Auth:** session; rate limited via `checkRateLimit(createLimiter, "shop-quote:<userId>")`.
-
-**Request:** JSON body — `items` (array of `{ productId: string, quantity: positive integer }`, required, non-empty), `address` (`ShippingAddress`, optional — if provided, `name`, `phone`, `line1`, `city`, `postalCode`, `country` are all required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"items":[{"productId":"clp1...","quantity":1}],"address":{"name":"Kovács János","phone":"+36301234567","line1":"Fő utca 1","city":"Budapest","postalCode":"1011","country":"HU"}}' \
-  "$HSR_URL/api/shop/quote"
-```
-
-**Response:**
-```json
-{ "subtotalHuf": 5000, "shippingFeeHuf": 1500, "vatFeeHuf": 0, "service": "MPL", "totalHuf": 6500, "validUntil": 1757760000000 }
-```
-`400` on invalid items/missing address fields, or the underlying quoting error message; `429` if rate limited.
-
----
-
-### `GET /api/shop/settings`
-
-**Why:** Tells the storefront whether the shop is enabled at all, so the UI can hide the shop entirely when it's off (default is enabled if no settings row exists yet).
-
-**Auth:** public.
-
-**Request:** no parameters.
-
-```bash
-curl -sS "$HSR_URL/api/shop/settings"
-```
-
-**Response:**
-```json
-{ "shopEnabled": true }
-```
-
----
-
-### `GET /api/shop/verify`
-
-**Why:** Called from the shop's success page after returning from Stripe Checkout, to finalize the order (mark it paid, trigger fulfillment) as a fallback/immediate path alongside the webhook — `finalizeShopOrderByCheckoutId()` is idempotent, so this and the webhook racing each other is safe.
-
-**Auth:** session (`getSessionWithBearer()`) — note the route does not check that the checkout session's `userId` metadata matches the caller before finalizing (unlike `/api/stripe/verify`'s donation flow).
-
-**Request:** query param — `session_id` (Stripe Checkout session id, required).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/shop/verify?session_id=cs_test_..."
-```
-
-**Response:** one of:
-```json
-{ "status": "completed" }
-```
-```json
-{ "status": "already_completed" }
-```
-```json
-{ "status": "pending" }
-```
-`400` missing `session_id`; `404` order not found.
-
----
-
-### `POST /api/stripe/checkout`
-
-**Why:** The support-donation checkout flow (distinct from the shop). This route file is a straight re-export (`export { POST } from "@/app/api/polar/checkout/route"`) — the implementation lives at `src/app/api/polar/checkout/route.ts` (a leftover name from a prior payment provider), and creates a Stripe Checkout session plus a pending `Donation` row.
-
-**Auth:** session (`getSessionWithBearer()`).
-
-**Request:** JSON body — `amount` (number, HUF, required, minimum 175).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"amount":2000}' \
-  "$HSR_URL/api/stripe/checkout"
-```
-
-**Response:**
-```json
-{ "url": "https://checkout.stripe.com/c/pay/cs_test_..." }
-```
-`400` amount below minimum or not a number; `401` unauthenticated.
-
----
-
-### `POST /api/stripe/verify`
-
-**Why:** Finalizes a donation after returning from Stripe Checkout — the polling counterpart to the webhook for the support/donation flow (separate from `/api/shop/verify`).
-
-**Auth:** session; ownership is explicitly checked against the Stripe session's own `metadata.userId` (`ownerUserId !== auth.id` → 403) — stricter than the shop's verify route.
-
-**Request:** JSON body — `sessionId` (string, required, the Stripe Checkout session id).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"sessionId":"cs_test_..."}' \
-  "$HSR_URL/api/stripe/verify"
-```
-
-**Response:** on `payment_status !== "paid"`:
-```json
-{ "status": "pending" }
-```
-On success, whatever `finalizeDonationByCheckoutId()` returns (donation confirmation payload). `400` missing/invalid `sessionId` or checkout session not in `payment` mode; `403` the checkout session's `userId` metadata doesn't match the caller; `401` unauthenticated.
-
----
-
 ### `POST /api/stripe/webhook`
 
 **Why:** The authoritative payment confirmation path — Stripe calls this directly, independent of whether the buyer's browser ever reaches the success page. Re-exported from `src/app/api/polar/webhook/route.ts`. Routes to shop order finalization or donation finalization based on the checkout session's `metadata.type`.
@@ -9270,752 +10952,6 @@ stripe listen --forward-to "$HSR_URL/api/stripe/webhook"
 
 **Response:** `{ "received": true }` on success (including for ignored event types). `400` missing/invalid signature; `500` if finalization throws. For `metadata.type === "shop"`, calls `finalizeShopOrderByCheckoutId(checkoutId)`; otherwise treats it as a donation and calls `finalizeDonationByCheckoutId(checkoutId, userId)` (skipped with a logged error if `checkoutId`/`userId` metadata is missing).
 
-## Supervision, Supervisor Requests, Tickets, Training, Type Trainings, User, Verify, Wiki
-
-### `GET /api/supervisor-request`
-
-**Why:** Lists supervisor requests. Instructors/admins (`canManageSupervisionRequests()` or `role === "ADMIN"`) see every PENDING request across all trainees to claim from the shared pool; an ordinary trainee sees only their own requests, enriched with the linked duty's `startTime` and every `SupervisionFault` marked on those requests (including warnings) so the trainee sees exactly what they were briefed on.
-
-**Auth:** Session (`requireAuth()`). Viewing everyone's queue additionally needs `canManageSupervisionRequests()` or `role === "ADMIN"`; anyone who can neither manage nor submit requests gets 403.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request"
-```
-
-**Response (own requests):**
-```json
-[
-  {
-    "id": "clx...",
-    "userId": "clu...",
-    "track": "DRIVER",
-    "status": "PENDING",
-    "availableFrom": "2026-09-14T06:00:00.000Z",
-    "availableTo": null,
-    "note": null,
-    "dutyId": null,
-    "duty": null,
-    "faults": []
-  }
-]
-```
-**Response (manager view):** array of `SupervisorRequest` rows with status `"PENDING"` and an included `user` (`id`, `displayName`, `name`, `discordRole`). Errors: `403` not permitted, `500` on failure.
-
-### `PUT /api/supervisor-request`
-
-**Why:** Lets an instructor/admin resolve a pending request without starting a session (e.g. cancel or mark completed some other way).
-
-**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403.
-
-**Request:** JSON body — `requestId` (string, required), `status` (`"COMPLETED" | "CANCELLED"`, required), `responseNote` (string, optional).
-
-```bash
-curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestId":"clx...","status":"CANCELLED","responseNote":"Trainee unavailable"}' \
-  "$HSR_URL/api/supervisor-request"
-```
-
-**Response:** the updated `SupervisorRequest` row. Errors: `400` missing/invalid fields, `403` not permitted, `500` on failure.
-
-### `DELETE /api/supervisor-request`
-
-**Why:** Removes a request — a trainee may withdraw their own still-PENDING request, and a manager may delete any request; deleting an IN_PROGRESS one also closes its linked active duty first.
-
-**Auth:** Session. Own PENDING request: the owner; any request: `canManageSupervisionRequests()` or `role === "ADMIN"`.
-
-**Request:** Query param `id` (string, required — the request id).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request?id=clx..."
-```
-
-**Response:** `{ "success": true }`. Errors: `400` missing id, `403` not the owner and not a manager, `404` not found, `500` on failure.
-
-### `POST /api/supervisor-request`
-
-**Why:** A trainee opens a supervision request into the shared instructor pool (no named instructor). Filed under the caller's own `supervisionTrack()`, falling back to `"DRIVER"` for an admin testing the flow (admins hold no trainee branch).
-
-**Auth:** Session; requires `permissions.canSubmitSupervisionRequest()` (the `SUBMIT_SUPERVISION` flag), else 403. The resolved track must also be open in `getTrackConfig()`, else 403.
-
-**Request:** JSON body — `availableFrom` (string, `YYYY-MM-DDTHH:mm[:ss]`, Budapest local time, required), `availableTo` (same format, optional), `note` (string, optional). Refused with 400 if the caller already has a PENDING request.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"availableFrom":"2026-09-14T16:00:00","note":"Free after 4pm"}' \
-  "$HSR_URL/api/supervisor-request"
-```
-
-**Response (201):** the created `SupervisorRequest` row. Errors: `400` missing/invalid dates or already has a pending request, `403` no `SUBMIT_SUPERVISION` or branch closed, `500` on failure.
-
-### `GET /api/training`
-
-**Why:** The trainee's own training-material page: modules/sections/blocks, progress and remaining deadline/hour budget for their (or a chosen) programme. Per the Automatic Content Translation section, block text is stripped out unless a live `TrainingAccessSession` is open, so browsing the navigation shell never leaks the course, and the returned content is machine-translated into the reader's locale (never re-translating text already in that language).
-
-**Auth:** Session (`requireAuth()`). The resolved branch must be one this member is actually enrolled/eligible for (`resolveBranch()`), else 403.
-
-**Request:** Query param `branch` (string, optional — a programme key; falls back to the caller's own trainee branch if omitted/invalid). Reader locale resolved via cookie/`?locale=`/`User.locale` per the translation section.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/training?branch=DRIVER&locale=en"
-```
-
-**Response:**
-```json
-{
-  "branch": "DRIVER",
-  "branchName": "Train Driver",
-  "availableBranches": ["DRIVER"],
-  "programs": [{ "key": "DRIVER", "name": "Train Driver" }],
-  "modules": [
-    {
-      "id": "clm...",
-      "branch": "DRIVER",
-      "sections": [{ "id": "cls...", "blocks": [] }]
-    }
-  ],
-  "translation": { "sourceLang": "hu" },
-  "progress": { "completedSectionIds": ["cls..."], "isCompleted": false, "totalMinutesUsed": 12, "rulesAccepted": true, "allSectionsCompleted": false },
-  "status": { "daysLeft": 18, "minutesLeft": 2988, "isDeadlinePassed": false, "isHoursExhausted": false, "isAccessAllowed": true },
-  "activeSession": null
-}
-```
-`blocks` are populated only while `activeSession` is non-null; `translation` is `null` when the content already matched the reader's language. Error: `403` not an active trainee for any branch.
-
-### `GET /api/type-trainings`
-
-**Why:** Lists open locomotive-type training sessions a driver may sign up for — locomotive-type knowledge is a driving concern, so it is gated on the drive permission rather than open to everyone.
-
-**Auth:** Session; requires `permissions.canDrive()` (`CAN_DRIVE`), else the `requirePermission` 403.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/type-trainings"
-```
-
-**Response:**
-```json
-[
-  { "id": "clt...", "title": "V63 type training", "scheduledAt": "2026-09-20T17:00:00.000Z", "registrantCount": 4, "isRegistered": false }
-]
-```
-
-### `GET /api/supervision/my-summary`
-
-**Why:** The trainee's own recurring-fault breakdown, grouped by fault code across every `TRAINEE`-kind supervision. Deliberately takes no `userId` — per the Trainee Supervision Summary section, reading somebody else's marked faults is the Head of Education's cross-trainee report behind `MANAGE_INSTRUCTORS`, and an id parameter here would be a second, ungated path to the same data.
-
-**Auth:** Session (`requireAuth()`). No further permission — always the caller's own supervisions.
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervision/my-summary"
-```
-
-**Response:** built by `buildTraineeSupervisionSummary()` — an object grouping faults by `code` with counts, whether each is "recurring" (marked across multiple sessions) or "improved" (absent from the most recent third of closed sessions), and warning-only occurrences. Renders as nothing on the dashboard when there is no closed supervision at all. Error: `500` on failure to build the summary.
-
-### `GET /api/supervision/rules`
-
-**Why:** Serves the trainee the same fault catalogue and thresholds the supervisor's sheet marks from — a printed hand-out would go stale the moment the Head of Education re-prices an item, per the Supervision Scoring section.
-
-**Auth:** Session (`requireAuth()`). No extra permission — read-only, active entries only.
-
-**Request:** Query param `track` (`"DRIVER" | "DISPATCHER"`, optional — otherwise both tracks' fault types are returned).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervision/rules?track=DRIVER"
-```
-
-**Response:**
-```json
-{
-  "faultTypes": [{ "id": "clf...", "code": "SIGNAL_MISS", "label": "Missed a signal", "kind": "INSTANT_FAIL", "points": 0, "track": "DRIVER" }],
-  "rules": { "enabled": true, "failPointThreshold": 6, "requiredLaps": 2, "pointsFromLap": 2, "instantFailFirstLapWarning": true }
-}
-```
-
-### `POST /api/supervisor-request/start`
-
-**Why:** An instructor claims a PENDING request and opens the trainee's supervision duty. The duty's type is derived from the programme's own trainee team (`programDutyType()`) rather than being hardcoded to `TRAIN_DRIVER`, so a dispatcher trainee's supervision correctly opens on the dispatcher team.
-
-**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403.
-
-**Request:** JSON body — `requestId` (string, required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestId":"clx..."}' \
-  "$HSR_URL/api/supervisor-request/start"
-```
-
-**Response:**
-```json
-{ "success": true, "dutyId": "cld...", "dutyType": "TRAIN_DRIVER", "trackNumber": "SUP-482913" }
-```
-Errors: `400` missing requestId or request not PENDING, `403` not permitted, `404` request not found, `409` trainee already has an active duty, `500` on failure.
-
-### `GET /api/supervisor-request/eligibility`
-
-**Why:** A small boolean-shaped endpoint split out of `GET /api/supervisor-request`, which answers with a bare array both web and mobile clients index into directly — this tells the dashboard whether the "request supervision" button should even be shown, and whether the branch itself is currently open.
-
-**Auth:** Session (`requireAuth()`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request/eligibility"
-```
-
-**Response:**
-```json
-{ "track": "DRIVER", "eligible": true, "trackOpen": true, "canSubmit": true, "tracks": { "DRIVER": true, "DISPATCHER": true } }
-```
-
-### `POST /api/supervisor-request/end`
-
-**Why:** Closes a running supervision. With the rulebook enabled, the outcome is derived from the marked `SupervisionFault` rows rather than declared by the closer — the `passed` field sent by the instructor is a confirmation of the sheet, and disagreeing with it requires `MANAGE_INSTRUCTORS` plus a written `responseNote` (per the Supervision Scoring section). A pass that hits the programme's `requiredSupervisions` count promotes the trainee (Discord role swap + email); an `OBSERVATION` session is always closed as a report, never pass/fail.
-
-**Auth:** Session; `role === "ADMIN"` or `canManageSupervisionRequests()`, else 403. Overriding the sheet's own verdict additionally needs `canManageInstructors()`.
-
-**Request:** JSON body — `requestId` (string, required), `passed` (boolean, required unless the session `kind` is `OBSERVATION`), `responseNote` (string, required only when overriding the sheet's derived verdict).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestId":"clx...","passed":true}' \
-  "$HSR_URL/api/supervisor-request/end"
-```
-
-**Response:**
-```json
-{ "success": true, "outcomeRule": null, "outcomeReason": null, "faultPoints": 0 }
-```
-Errors: `400` missing requestId/passed, request not IN_PROGRESS, undocumented laps, or a disagreement with the sheet without the required override permission/reason; `403` not permitted; `404` not found; `500` on failure.
-
-### `GET /api/supervisor-request/evaluation`
-
-**Why:** The live evaluation sheet for one running supervision — the fault catalogue to mark from plus everything already marked and what the rulebook currently makes of it (pass/fail projection, undocumented laps).
-
-**Auth:** Session; requires `canManageSupervisionRequests()`.
-
-**Request:** Query param `requestId` (string, required).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request/evaluation?requestId=clx..."
-```
-
-**Response:**
-```json
-{
-  "state": { "requestId": "clx...", "track": "DRIVER", "faults": [], "undocumentedLaps": [], "outcome": { "failed": false, "points": 0, "rule": null, "detail": null, "threshold": 6 } },
-  "faultTypes": [{ "id": "clf...", "code": "SIGNAL_MISS", "label": "Missed a signal" }]
-}
-```
-Errors: `400` missing requestId, `403` not permitted, `404` supervision not found.
-
-### `GET /api/user/confirm-account`
-
-**Why:** Tells a member logging in via Roblox whether they need to confirm ownership of an account the game server auto-created before they ever signed up — a fresh account with no game history is silently marked confirmed instead of asking.
-
-**Auth:** Session (`getSession()`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/user/confirm-account"
-```
-
-**Response (needs confirmation):**
-```json
-{
-  "needsConfirmation": true,
-  "account": { "id": "clu...", "robloxId": "12345", "name": "Kovacs123", "displayName": null, "image": "https://tr.rbxcdn.com/...", "totalPlayTime": 3600, "totalSessions": 5, "createdAt": "2026-01-02T10:00:00.000Z", "discordLinked": false }
-}
-```
-Or `{ "needsConfirmation": false }`. Errors: `401` unauthenticated, `404` user not found, `500` on failure.
-
-### `POST /api/user/confirm-account`
-
-**Why:** Records the member's answer to the confirmation prompt: `"confirm"` accepts the auto-created game history as their own; `"reject"` keeps the account (Roblox OAuth already proved the `robloxId` is theirs) but zeroes the stats, since they don't want that play history attributed to them.
-
-**Auth:** Session (`getSession()`).
-
-**Request:** JSON body — `action` (`"confirm" | "reject"`, required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"action":"confirm"}' \
-  "$HSR_URL/api/user/confirm-account"
-```
-
-**Response:** `{ "success": true }`. Errors: `400` invalid/missing action, `401` unauthenticated, `500` on failure.
-
-### `GET /api/user/me`
-
-**Why:** The caller's own core account fields, for both web (cookie session) and mobile (bearer token) clients.
-
-**Auth:** Session or bearer (`getSessionWithBearer()`).
-
-**Request:** No parameters.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/user/me"
-```
-
-**Response:**
-```json
-{
-  "id": "clu...", "robloxId": "12345", "name": "Kovacs123", "displayName": "Kovács János",
-  "image": "https://tr.rbxcdn.com/...", "steamId": null, "discordId": "9876543210",
-  "discordUsername": "kovacsj", "discordAvatar": "abcd1234", "discordRole": "Train driver",
-  "role": "USER", "banned": false, "createdAt": "2025-11-01T09:00:00.000Z",
-  "lastLoginAt": "2026-09-13T08:00:00.000Z", "locale": "hu"
-}
-```
-Errors: `401` unauthenticated, `404` user not found, `500` on failure.
-
-### `PATCH /api/user/me`
-
-**Why:** Lets the member edit the two fields the site itself owns for them — their display name and their language preference. Roblox/Discord-sourced fields are never editable here.
-
-**Auth:** Session or bearer (`getSessionWithBearer()`).
-
-**Request:** JSON body — `displayName` (string, 1-32 chars, optional), `locale` (must be one of `SUPPORTED_LOCALES`, optional). At least one must be present.
-
-```bash
-curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"locale":"en"}' \
-  "$HSR_URL/api/user/me"
-```
-
-**Response:** `{ "success": true, "user": { "id": "clu...", "displayName": "...", "locale": "en", ... } }`. Errors: `400` invalid displayName length/locale or no valid fields, `401` unauthenticated, `500` on failure.
-
-### `GET /api/user/[userId]`
-
-**Why:** A minimal public-ish lookup of another user's basic identity (name, rank, avatar) — used where a UI needs to display who a duty/schedule row belongs to.
-
-**Auth:** Session or bearer (`getSessionWithBearer()`) — any authenticated caller, no ownership or permission check on the target `userId`.
-
-**Request:** Path param `userId` (string, required).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/user/clu1234567890"
-```
-
-**Response:**
-```json
-{ "id": "clu1234567890", "robloxId": "12345", "name": "Kovacs123", "displayName": "Kovács János", "image": "https://tr.rbxcdn.com/...", "discordRole": "Train driver", "role": "USER" }
-```
-Errors: `401` unauthenticated, `404` user not found, `500` on failure.
-
-### `GET /api/verify/[code]`
-
-**Why:** Public verification of a signed document by its verify code — metadata only (validity, title, who signed, when); the document body never leaves the hidden authenticated surface, so a leaked code discloses nothing about the content.
-
-**Auth:** Public, no session. Rate limited per IP (`apiLimiter`).
-
-**Request:** Path param `code` (string, required — URL-encoded verify code, normalized via `normalizeVerifyCode()`).
-
-```bash
-curl -sS "$HSR_URL/api/verify/AB12-CD34-EF56"
-```
-
-**Response:**
-```json
-{
-  "found": true, "verifyCode": "AB12-CD34-EF56", "title": "Driver Certification 2026",
-  "valid": true, "status": "SIGNED", "signedAt": "2026-03-01T12:00:00.000Z",
-  "signerName": "Nagy Péter", "signerTitle": "Director General",
-  "signatures": [{ "name": "Nagy Péter", "title": "Director General", "signedAt": "2026-03-01T12:00:00.000Z" }],
-  "authorName": "Kis Anna", "authorRole": "HR", "pdfSha256": "9f8e...",
-  "revokedAt": null, "revokedByName": null, "revokeReason": null
-}
-```
-A draft/pending document, an unrecognized code format, or no match all answer `404` with `{ "found": false, "reason": "NOT_FOUND" | "INVALID_FORMAT" }`.
-
-### `GET /api/wiki/articles`
-
-**Why:** Public list of every published wiki page (pinned first, then alphabetical), with its category — the plain data feed behind the wiki index; the reader-facing translation described in the Automatic Content Translation section is applied on the `/wiki` page route itself, not here.
-
-**Auth:** Public — no session check.
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/wiki/articles"
-```
-
-**Response:** array of `WikiPage` rows with `category` included, e.g. `[{ "id": "clw...", "slug": "brake-test", "title": "Brake test", "isPublished": true, "isPinned": false, "category": { "id": "clc...", "name": "Operations", "slug": "operations" } }]`. Error: `500` on failure.
-
-### `POST /api/wiki/articles`
-
-**Why:** Creates a new wiki page. Despite living under `/api/wiki`, this is an admin-only write, gated the same way `/admin/wiki` gates its own mutations.
-
-**Auth:** Session; requires `MANAGE_WIKI` flag (`requirePermission((p) => p.hasFlag("MANAGE_WIKI"))`).
-
-**Request:** JSON body — `slug` (string, required, must be unique), `title` (string, required), `content` (string, optional, defaults to `""`), `excerpt` (string, optional), `categoryId` (string, optional), `order` (number, optional, defaults to `0`), `isPublished` (boolean, optional, defaults to `true`), `isPinned` (boolean, optional, defaults to `false`).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"slug":"new-rule","title":"New rule","content":"# Text"}' \
-  "$HSR_URL/api/wiki/articles"
-```
-
-**Response:** the created `WikiPage` row. Errors: `400` slug already exists, `403` missing `MANAGE_WIKI`, `500` on failure.
-
-### `GET /api/wiki/categories`
-
-**Why:** Public list of wiki categories, each with its published pages, for building the wiki's sidebar navigation tree.
-
-**Auth:** Public — no session check.
-
-**Request:** No parameters.
-
-```bash
-curl -sS "$HSR_URL/api/wiki/categories"
-```
-
-**Response:** array of `WikiCategory` rows with `pages` included, e.g. `[{ "id": "clc...", "name": "Operations", "slug": "operations", "order": 0, "pages": [{ "id": "clw...", "title": "Brake test", "slug": "brake-test" }] }]`. Error: `500` on failure.
-
-### `POST /api/wiki/categories`
-
-**Why:** Creates a wiki category. Admin-only write under a member-facing path.
-
-**Auth:** Session; requires `MANAGE_WIKI`.
-
-**Request:** JSON body — `name` (string, required), `slug` (string, required, unique), `icon` (string, optional), `description` (string, optional), `order` (number, optional, defaults `0`).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"Operations","slug":"operations"}' \
-  "$HSR_URL/api/wiki/categories"
-```
-
-**Response:** the created `WikiCategory` row. Errors: `400` slug already exists, `403` missing `MANAGE_WIKI`, `500` on failure.
-
-### `PUT /api/wiki/categories`
-
-**Why:** Renames/reorders an existing category.
-
-**Auth:** Session; requires `MANAGE_WIKI`.
-
-**Request:** JSON body — `id` (string, required), `name` (string, required), `slug` (string, required, unique excluding this row), `icon` (string, optional), `description` (string, optional), `order` (number, optional, defaults `0`).
-
-```bash
-curl -sS -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"id":"clc...","name":"Operations","slug":"operations","order":1}' \
-  "$HSR_URL/api/wiki/categories"
-```
-
-**Response:** the updated `WikiCategory` row. Errors: `400` slug taken by another category, `403` missing `MANAGE_WIKI`, `500` on failure.
-
-### `DELETE /api/wiki/categories`
-
-**Why:** Deletes a category and every wiki page filed under it.
-
-**Auth:** Session; requires `MANAGE_WIKI`.
-
-**Request:** JSON body — `id` (string, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"id":"clc..."}' \
-  "$HSR_URL/api/wiki/categories"
-```
-
-**Response:** `{ "success": true }`. Errors: `403` missing `MANAGE_WIKI`, `500` on failure.
-
-### `GET /api/wiki/articles/[id]`
-
-**Why:** Fetches one wiki page by id and increments its view counter — the reader-facing article view. Machine translation of the body (per the Automatic Content Translation section) is applied by the `/wiki/[slug]` page route, not returned from this raw API.
-
-**Auth:** Public — no session check.
-
-**Request:** Path param `id` (string, required).
-
-```bash
-curl -sS "$HSR_URL/api/wiki/articles/clw1234567890"
-```
-
-**Response:** the `WikiPage` row with `category` included. Errors: `404` not found, `500` on failure.
-
-### `PATCH /api/wiki/articles/[id]`
-
-**Why:** Edits a wiki page. Only an explicit allow-list of fields is copied from the body into the Prisma update — the old code passed the raw body straight through, which made every column (including `views` and `createdAt`) writable by whoever could reach this route.
-
-**Auth:** Session; requires `MANAGE_WIKI`.
-
-**Request:** Path param `id` (string, required). JSON body — any of `title` (string), `slug` (string), `content` (string), `excerpt` (string or `null`), `order` (number), `isPublished` (boolean), `isPinned` (boolean), `categoryId` (string) — all optional, only present fields are updated.
-
-```bash
-curl -sS -X PATCH -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"isPublished":true,"order":2}' \
-  "$HSR_URL/api/wiki/articles/clw1234567890"
-```
-
-**Response:** the updated `WikiPage` row. Errors: `403` missing `MANAGE_WIKI`, `500` on failure (including a bad `categoryId`).
-
-### `DELETE /api/wiki/articles/[id]`
-
-**Why:** Removes a wiki page.
-
-**Auth:** Session; requires `MANAGE_WIKI`.
-
-**Request:** Path param `id` (string, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/wiki/articles/clw1234567890"
-```
-
-**Response:** `{ "success": true }`. Errors: `403` missing `MANAGE_WIKI`, `500` on failure.
-
-### `GET /api/training/section`
-
-**Why:** Fetches one section's blocks, translated into the reader's language, for the trainee currently viewing it. `/api/training` deliberately never translates block text live for the whole course (it would produce a course half in each language before the cache warms); this route handles the one section actually being read, which is small enough to finish inside its own (longer, 25s default) translation budget. Same access-session gate as `/api/training`, so this cannot be used to pull the whole course section by section without an open session.
-
-**Auth:** Session (`requireAuth()`). The section's branch must resolve to one the caller may access (`resolveBranch()`), and a live `TrainingAccessSession` for that branch must be open, else 403.
-
-**Request:** Query param `id` (string, required — the section id). `?locale=` supported via `requestLocale()`.
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/training/section?id=cls1234567890&locale=en"
-```
-
-**Response:**
-```json
-{ "sectionId": "cls1234567890", "sourceLang": "hu", "blocks": [{ "id": "clb...", "text": "Translated section text..." }] }
-```
-`sourceLang` is `null` when no translation was needed. Errors: `400` missing id, `403` wrong branch / no active session, `404` section not found.
-
-### `POST /api/training/progress`
-
-**Why:** Marks one section as completed for the caller's own progress in a branch, rolling up whether the whole module is done (a completion-gate section, or every section in the branch completed).
-
-**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
-
-**Request:** JSON body — `sectionId` (string, required), `branch` (string, optional — resolved/validated against the caller's programmes).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"sectionId":"cls1234567890","branch":"DRIVER"}' \
-  "$HSR_URL/api/training/progress"
-```
-
-**Response:** `{ "ok": true, "isCompleted": false, "allSectionsCompleted": false }` (or `{ "ok": true, "alreadyCompleted": true }` if already marked). Errors: `400` missing sectionId or section belongs to another branch, `403` branch not accessible, `404` section not found.
-
-### `POST /api/training/access`
-
-**Why:** Opens a timed (45-minute) training-material access session, which is what unlocks block text from `GET /api/training`/`/api/training/section`. Also enforces the programme's day/hour limits and closes any other open session first (a member can only sit in front of one material at a time), crediting the elapsed minutes to that other branch's progress before starting the new one.
-
-**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
-
-**Request:** JSON body — `branch` (string, optional — resolved against the caller's programmes).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"branch":"DRIVER"}' \
-  "$HSR_URL/api/training/access"
-```
-
-**Response:** `{ "token": "b3f1...", "expiresAt": "2026-09-13T09:45:00.000Z" }`. Errors: `403` branch not accessible, training deadline expired, or hour budget exhausted.
-
-### `POST /api/training/heartbeat`
-
-**Why:** Confirms an access-session token is still valid, so the client's training-material page knows whether to keep the material unlocked or force a re-open.
-
-**Auth:** Session (`requireAuth()`). Caller must have at least one accessible branch.
-
-**Request:** JSON body — `token` (string, required — the session token from `/api/training/access`).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"token":"b3f1..."}' \
-  "$HSR_URL/api/training/heartbeat"
-```
-
-**Response:** `{ "valid": true, "expiresAt": "2026-09-13T09:45:00.000Z" }`, or `401 { "valid": false }` if the token is missing/expired/not the caller's. Error: `403` if no branch is accessible at all.
-
-### `POST /api/training/rules-accept`
-
-**Why:** Records that the trainee has acknowledged the training rules for a branch, gating further progress the same way the material's other checkpoints do.
-
-**Auth:** Session (`requireAuth()`). Branch must resolve for the caller.
-
-**Request:** JSON body — `branch` (string, optional — resolved against the caller's programmes).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"branch":"DRIVER"}' \
-  "$HSR_URL/api/training/rules-accept"
-```
-
-**Response:** `{ "ok": true }`. Error: `403` branch not accessible.
-
-### `POST /api/training/access/end`
-
-**Why:** Closes a training access session and writes back the minutes consumed against the trainee's hour budget. Deliberately checks only token ownership, not the trainee's current role — a trainee who loses the role mid-session must still be able to close it, or the consumed minutes are never credited.
-
-**Auth:** Session (`requireAuth()`) — ownership of the session token, no permission/branch gate.
-
-**Request:** JSON body — `token` (string, required).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"token":"b3f1..."}' \
-  "$HSR_URL/api/training/access/end"
-```
-
-**Response:** `{ "ok": true, "minutesConsumed": 12 }`, or `{ "ok": true }` (idempotent) if no matching open session exists.
-
-### `POST /api/supervisor-request/evaluation/lap`
-
-**Why:** Documents one completed lap of a running supervision — required before the session can be closed, per the Supervision Scoring section's "documentation is a gate, not a report" rule.
-
-**Auth:** Session; requires `canManageSupervisionRequests()`.
-
-**Request:** JSON body — `requestId` (string, required), `index` (number, required — the lap index), `note` (string, optional).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestId":"clx...","index":0,"note":"Clean lap"}' \
-  "$HSR_URL/api/supervisor-request/evaluation/lap"
-```
-
-**Response:** `{ "state": { ...evaluation state... } }`. Errors: `400` missing requestId/index or the underlying rule rejects it, `403` not permitted.
-
-### `DELETE /api/supervisor-request/evaluation/lap`
-
-**Why:** Undoes a documented lap.
-
-**Auth:** Session; requires `canManageSupervisionRequests()`.
-
-**Request:** Query params `requestId` (string, required), `index` (number, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request/evaluation/lap?requestId=clx...&index=0"
-```
-
-**Response:** `{ "state": { ... } }`. Errors: `400` missing params or rejected, `403` not permitted.
-
-### `POST /api/supervisor-request/evaluation/fault`
-
-**Why:** Marks a fault against the trainee during a running supervision, from the shared catalogue.
-
-**Auth:** Session; requires `canManageSupervisionRequests()`.
-
-**Request:** JSON body — `requestId` (string, required), `faultTypeId` (string, required), `lap` (number, required), `points` (number, optional — override the catalogue's own point cost), `note` (string, optional).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"requestId":"clx...","faultTypeId":"clf...","lap":0}' \
-  "$HSR_URL/api/supervisor-request/evaluation/fault"
-```
-
-**Response:** `{ "state": { ... } }`. Errors: `400` missing fields or rejected, `403` not permitted.
-
-### `DELETE /api/supervisor-request/evaluation/fault`
-
-**Why:** Undoes a marked fault — a mis-click during a live supervision is not a verdict.
-
-**Auth:** Session; requires `canManageSupervisionRequests()`.
-
-**Request:** Query param `id` (string, required — the fault id).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/supervisor-request/evaluation/fault?id=clfault..."
-```
-
-**Response:** `{ "state": { ... } }`. Errors: `400` missing id or rejected, `403` not permitted.
-
-### `GET /api/tickets/mine/[id]`
-
-**Why:** Reads one of the caller's own Discord-bridged support tickets with its full message thread. A ticket that is not the caller's answers `404` rather than `403` — since the id is a cuid, confirming existence at all would leak that somebody else owns a ticket by that id.
-
-**Auth:** Session or bearer (`getSessionWithBearer()`), plus ownership (`ownsTicket()`).
-
-**Request:** Path param `id` (string, required).
-
-```bash
-curl -sS -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/tickets/mine/clt1234567890"
-```
-
-**Response:**
-```json
-{
-  "ticket": {
-    "id": "clt1234567890", "status": "CLOSED", "categoryLabel": "General",
-    "createdAt": "2026-09-01T10:00:00.000Z", "closedAt": "2026-09-01T12:00:00.000Z",
-    "closedByUsername": "staffuser", "claimedByName": "staffuser", "channelId": "1122334455",
-    "rating": { "stars": 5, "comment": "Thanks!", "createdAt": "2026-09-01T12:05:00.000Z" },
-    "messages": [{ "id": "clm...", "discordUsername": "member", "isStaff": false, "content": "Hi", "attachments": [], "createdAt": "2026-09-01T10:00:00.000Z" }]
-  }
-}
-```
-Errors: `401` unauthenticated, `404` not found or not owned by caller.
-
-### `POST /api/type-trainings/[id]/register`
-
-**Why:** Signs the caller up for a scheduled locomotive-type training. Upserted so a repeat click is harmless.
-
-**Auth:** Session; requires `permissions.canDrive()`.
-
-**Request:** Path param `id` (string, required — the training id). No body.
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/type-trainings/clt1234567890/register"
-```
-
-**Response:** `{ "ok": true }`. Error: `400` training not found or not `SCHEDULED`.
-
-### `DELETE /api/type-trainings/[id]/register`
-
-**Why:** Withdraws the caller's own registration from a type training.
-
-**Auth:** Session (`requireAuth()`) — no `CAN_DRIVE` gate on withdrawal, just ownership by construction (deletes only the caller's own registration row).
-
-**Request:** Path param `id` (string, required).
-
-```bash
-curl -sS -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$HSR_URL/api/type-trainings/clt1234567890/register"
-```
-
-**Response:** `{ "ok": true }` regardless of whether a registration existed.
-
-### `POST /api/tickets/mine/[id]/rating`
-
-**Why:** The web half of the ticket star rating — writes the same `DiscordTicketRating` row the Discord-side rating buttons write, so a member can rate wherever they happen to be and the rating board counts it exactly once either way. Only a `CLOSED` ticket may be rated.
-
-**Auth:** Session or bearer (`getSessionWithBearer()`), plus ownership (`ownsTicket()`).
-
-**Request:** Path param `id` (string, required). JSON body — `stars` (integer 1-5, required), `comment` (string, optional, trimmed to 1000 chars).
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"stars":5,"comment":"Quick and helpful"}' \
-  "$HSR_URL/api/tickets/mine/clt1234567890/rating"
-```
-
-**Response:** `{ "rating": { "stars": 5, "comment": "Quick and helpful", "createdAt": "2026-09-13T09:00:00.000Z" } }`. Errors: `400` invalid stars or ticket not `CLOSED`, `401` unauthenticated, `404` not found or not owned by caller.
-
 ## Source of truth
 
-The implementation for every endpoint is under `src/app/api/`. Shared authentication, authorization, validation, and business logic is under `src/lib/`. For complete mobile OAuth examples and response payloads, see [Mobile API](mobile-api.md).
+Every endpoint is implemented under `src/app/api/` in the main repository; shared authentication, permission and business logic is under `src/lib/`. When this reference and the code disagree, the code wins — please fix the reference in the same change.
